@@ -28,6 +28,12 @@ def reset_test_db():
 
 
 @pytest.fixture
+def session():
+    with Session(engine) as test_session:
+        yield test_session
+
+
+@pytest.fixture
 def client():
     app.dependency_overrides[get_session] = get_test_session
 

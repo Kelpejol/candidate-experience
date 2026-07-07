@@ -1,7 +1,9 @@
 
-from fastapi import APIRouter, Depends, Query, HTTPException
+from fastapi import APIRouter, Depends, Query, HTTPException, UploadFile, File
 
-from app.schemas.campaign import CampaignRead, CampaignCreate, CampaignCandidateRead, CampaignCandidateCreate, CampaignCandidateSurveyStatusUpdate, OutboundCallAttemptRead
+from app.services.candidate_import_service import parse_candidate_upload
+
+from app.schemas.campaign import CampaignRead, CampaignCreate, CampaignCandidateRead, CampaignCandidateCreate, CampaignCandidateSurveyStatusUpdate, OutboundCallAttemptRead, CampaignSurveySyncResponse
 from sqlmodel import Session
 from app.services.campaign_service import (
     create_campaign as create_campaign_service,
@@ -14,7 +16,14 @@ from app.services.campaign_service import (
     list_eligible_non_responders as list_eligible_non_responders_service,
     build_outbound_call_queue as build_outbound_call_queue_service,
    list_outbound_call_attempts as list_outbound_call_attempts_service,
+   apply_candidate_survey_updates,
     )
+from app.core.config import get_settings
+from app.integrations.surveymonkey_client import SurveyMonkeyClient
+from app.services.surveymonkey_sync_service import (
+    build_candidate_survey_updates,
+    summarize_collector_responses,
+)
 
 from app.core.database import get_session
 
@@ -69,6 +78,35 @@ def add_candidates_to_campaign(
     
     return add_campaign_candidates(campaign_id, candidates, session)
 
+
+@router.post("/{campaign_id}/candidates/upload", response_model=list[CampaignCandidateRead], status_code=201)
+async def upload_candidates_to_campaign(
+    campaign_id: str,
+    file: UploadFile = File(...),
+    session: Session = Depends(get_session)
+):
+    campaign = get_campaign_by_id(campaign_id, session)
+
+    if not campaign:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+    
+    file_bytes = await file.read()
+
+    try:
+        candidates = parse_candidate_upload(
+            file_bytes=file_bytes,
+            filename=file.filename or "",
+            default_tool_name=campaign.tool_name,
+            default_campaign_name=campaign.name,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    return add_campaign_candidates(
+        campaign_id=campaign_id,
+        candidates_data=candidates,
+        session=session,
+    )
 
 @router.get("/{campaign_id}/candidates", response_model=list[CampaignCandidateRead])
 def list_campaign_candidates(
@@ -136,6 +174,73 @@ def list_eligible_non_responders(
        offset=offset
     )
 
+
+@router.post("/{campaign_id}/survey/sync-responses", response_model=CampaignSurveySyncResponse)
+def sync_campaign_survey_responses(
+    campaign_id: str,
+    session: Session = Depends(get_session),
+):
+    campaign = get_campaign_by_id(campaign_id, session)
+
+    if not campaign:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+
+    if not campaign.survey_id or not campaign.surveymonkey_collector_id:
+        raise HTTPException(
+            status_code=400,
+            detail="Campaign does not have SurveyMonkey survey and collector configured",
+        )
+
+    settings = get_settings()
+
+    if not settings.surveymonkey_access_token:
+        raise HTTPException(
+            status_code=500,
+            detail="SurveyMonkey access token is not configured",
+        )
+
+    client = SurveyMonkeyClient(
+        base_url=settings.surveymonkey_base_url,
+        access_token=settings.surveymonkey_access_token,
+    )
+
+    recipients = client.list_all_collector_recipients(
+        campaign.surveymonkey_collector_id
+    )
+    responses = client.list_all_survey_responses_bulk(campaign.survey_id)
+
+    summary = summarize_collector_responses(
+        recipients=recipients,
+        responses=responses,
+        collector_id=campaign.surveymonkey_collector_id,
+    )
+
+    candidates = list_campaign_candidates_service(
+        campaign_id=campaign_id,
+        session=session,
+        limit=500,
+        offset=0,
+    )
+
+    updates = build_candidate_survey_updates(
+        candidates=candidates,
+        recipients=recipients,
+        response_summary=summary,
+    )
+
+    updated_candidates = apply_candidate_survey_updates(
+        campaign_id=campaign_id,
+        updates=updates,
+        session=session,
+    )
+
+    return {
+        "total_recipients": summary["total_recipients"],
+        "completed": summary["completed"],
+        "partial": summary["partial"],
+        "non_responders": summary["non_responders"],
+        "updated_candidates": len(updated_candidates),
+    }
 
 
 

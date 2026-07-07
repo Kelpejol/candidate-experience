@@ -1,10 +1,17 @@
 
 from sqlmodel import Session, select
-
+from datetime import datetime
 from app.models.campaign import Campaign
 from app.models.campaign_candidate import CampaignCandidate
 from app.schemas.campaign import CampaignCandidateCreate, CampaignCreate, CampaignCandidateSurveyStatusUpdate
 from app.models.outbound_call_attempt import OutboundCallAttempt
+
+
+def parse_optional_datetime(value):
+    if value is None or isinstance(value, datetime):
+        return value
+
+    return datetime.fromisoformat(value.replace("Z", "+00:00"))
 
 def create_campaign(campaign_data: CampaignCreate, session: Session):
 
@@ -190,6 +197,10 @@ def build_outbound_call_queue(
         attempt = OutboundCallAttempt(
             campaign_id=campaign_id,
             candidate_id=candidate.id,
+            candidate_name=candidate.candidate_name,
+            candidate_email=candidate.email,
+            campaign_name=candidate.campaign_name,
+            tool_name=candidate.tool_name,
             phone=candidate.phone,
             attempt_number=1,
             status="queued",
@@ -224,3 +235,38 @@ def list_outbound_call_attempts(
 
     return session.exec(statement).all()
 
+
+
+def apply_candidate_survey_updates(
+        campaign_id: str,
+        updates: list[dict],
+        session: Session
+) -> list[CampaignCandidate]:
+    updated_candidates: list[CampaignCandidate] = []
+
+    for update in updates:
+        candidate = get_campaign_candidate_by_id(
+            campaign_id=campaign_id,
+            candidate_id=update["candidate_id"],
+            session=session
+        )
+
+
+        if not candidate:
+            continue
+
+        candidate.surveymonkey_recipient_id = update["surveymonkey_recipient_id"]
+        candidate.surveymonkey_response_id = update["surveymonkey_response_id"]
+        candidate.surveymonkey_response_status = update["surveymonkey_response_status"]
+        candidate.survey_status = update["survey_status"]
+        candidate.survey_responded_at = parse_optional_datetime(update["survey_responded_at"])
+        session.add(candidate)
+        updated_candidates.append(candidate)
+
+    session.commit()
+
+    for candidate in updated_candidates:
+        session.refresh(candidate)
+
+    
+    return updated_candidates

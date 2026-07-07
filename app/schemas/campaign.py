@@ -159,6 +159,10 @@ class OutboundCallAttemptRead(BaseModel):
     id: str
     campaign_id: str
     candidate_id: str
+    candidate_name: str | None = None
+    candidate_email: str | None = None
+    campaign_name: str | None = None
+    tool_name: str | None = None
     phone: str
     attempt_number: int
     status: OutboundCallAttemptStatus
@@ -170,3 +174,11 @@ class OutboundCallAttemptRead(BaseModel):
     started_at: datetime | None = None
     ended_at: datetime | None = None
     created_at: datetime
+
+
+class CampaignSurveySyncResponse(BaseModel):
+    total_recipients: int
+    completed: int
+    partial: int
+    non_responders: int
+    updated_candidates: int

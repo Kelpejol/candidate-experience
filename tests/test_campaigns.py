@@ -1,3 +1,6 @@
+from datetime import datetime
+
+
 def test_create_campaign(client):
     payload = {
         "name": "Graduate Aptitude Test Survey",
@@ -293,6 +296,9 @@ def test_build_outbound_queue_creates_attempts_for_eligible_non_responders_only(
     attempts = build_response.json()
     assert len(attempts) == 1
     assert attempts[0]["candidate_id"] == eligible_candidate_id
+    assert attempts[0]["candidate_name"] == "Eligible Candidate"
+    assert attempts[0]["candidate_email"] == "eligible@example.com"
+    assert attempts[0]["tool_name"] == "FOT"
     assert attempts[0]["phone"] == "+2348012345678"
     assert attempts[0]["attempt_number"] == 1
     assert attempts[0]["status"] == "queued"
@@ -346,3 +352,220 @@ def test_build_outbound_queue_is_idempotent(client):
     attempts_response = client.get(f"/campaigns/{campaign_id}/outbound/attempts")
 
     assert len(attempts_response.json()) == 1
+
+
+def test_apply_candidate_survey_updates_updates_surveymonkey_fields(client, session):
+    from app.services.campaign_service import apply_candidate_survey_updates
+
+    campaign_response = client.post(
+        "/campaigns",
+        json={
+            "name": "Graduate Aptitude Test Survey",
+            "tool_name": "FOT",
+        },
+    )
+    campaign_id = campaign_response.json()["id"]
+
+    add_response = client.post(
+        f"/campaigns/{campaign_id}/candidates",
+        json=[
+            {
+                "candidate_name": "Ada Lovelace",
+                "email": "ada@example.com",
+                "phone": "+2348012345678",
+                "tool_name": "FOT",
+            }
+        ],
+    )
+    candidate_id = add_response.json()[0]["id"]
+
+    updated = apply_candidate_survey_updates(
+        campaign_id=campaign_id,
+        updates=[
+            {
+                "candidate_id": candidate_id,
+                "surveymonkey_recipient_id": "recipient_1",
+                "surveymonkey_response_id": "response_1",
+                "surveymonkey_response_status": "completed",
+                "survey_status": "responded",
+                "survey_responded_at": "2026-06-20T16:05:07+00:00",
+            }
+        ],
+        session=session,
+    )
+
+    assert len(updated) == 1
+    assert updated[0].surveymonkey_recipient_id == "recipient_1"
+    assert updated[0].surveymonkey_response_id == "response_1"
+    assert updated[0].surveymonkey_response_status == "completed"
+    assert updated[0].survey_status == "responded"
+    assert updated[0].survey_responded_at == datetime(2026, 6, 20, 16, 5, 7)
+
+
+
+
+def test_sync_campaign_survey_responses_updates_candidates(client, monkeypatch):
+    campaign_response = client.post(
+        "/campaigns",
+        json={
+            "name": "Graduate Aptitude Test Survey",
+            "tool_name": "FOT",
+            "survey_id": "survey_1",
+            "surveymonkey_collector_id": "collector_1",
+        },
+    )
+    campaign_id = campaign_response.json()["id"]
+
+    add_response = client.post(
+        f"/campaigns/{campaign_id}/candidates",
+        json=[
+            {
+                "candidate_name": "Completed Candidate",
+                "email": "completed@example.com",
+                "phone": "+2348012345678",
+                "tool_name": "FOT",
+            },
+            {
+                "candidate_name": "Partial Candidate",
+                "email": "partial@example.com",
+                "phone": "+2348023456789",
+                "tool_name": "FOT",
+            },
+            {
+                "candidate_name": "No Response Candidate",
+                "email": "missing@example.com",
+                "phone": "+2348034567890",
+                "tool_name": "FOT",
+            },
+        ],
+    )
+
+    candidate_ids = {
+        candidate["candidate_name"]: candidate["id"]
+        for candidate in add_response.json()
+    }
+
+    class FakeSurveyMonkeyClient:
+        def __init__(self, base_url: str, access_token: str):
+            pass
+
+        def list_all_collector_recipients(self, collector_id: str):
+            return [
+                {"id": "recipient_1", "email": "completed@example.com"},
+                {"id": "recipient_2", "email": "partial@example.com"},
+                {"id": "recipient_3", "email": "missing@example.com"},
+            ]
+
+        def list_all_survey_responses_bulk(self, survey_id: str):
+            return [
+                {
+                    "id": "response_1",
+                    "collector_id": "collector_1",
+                    "recipient_id": "recipient_1",
+                    "response_status": "completed",
+                    "date_modified": "2026-06-20T16:05:07+00:00",
+                },
+                {
+                    "id": "response_2",
+                    "collector_id": "collector_1",
+                    "recipient_id": "recipient_2",
+                    "response_status": "partial",
+                    "date_modified": "2026-06-20T16:10:07+00:00",
+                },
+            ]
+
+    monkeypatch.setattr(
+        "app.api.routes.campaigns.SurveyMonkeyClient",
+        FakeSurveyMonkeyClient,
+    )
+
+    response = client.post(f"/campaigns/{campaign_id}/survey/sync-responses")
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["total_recipients"] == 3
+    assert data["completed"] == 1
+    assert data["partial"] == 1
+    assert data["non_responders"] == 1
+    assert data["updated_candidates"] == 3
+
+    candidates_response = client.get(f"/campaigns/{campaign_id}/candidates")
+    candidates = {
+        candidate["id"]: candidate
+        for candidate in candidates_response.json()
+    }
+
+    completed = candidates[candidate_ids["Completed Candidate"]]
+    partial = candidates[candidate_ids["Partial Candidate"]]
+    missing = candidates[candidate_ids["No Response Candidate"]]
+
+    assert completed["survey_status"] == "responded"
+    assert completed["surveymonkey_recipient_id"] == "recipient_1"
+    assert completed["surveymonkey_response_id"] == "response_1"
+    assert completed["surveymonkey_response_status"] == "completed"
+
+    assert partial["survey_status"] == "partial_response"
+    assert partial["surveymonkey_recipient_id"] == "recipient_2"
+    assert partial["surveymonkey_response_id"] == "response_2"
+    assert partial["surveymonkey_response_status"] == "partial"
+
+    assert missing["survey_status"] == "non_responder"
+    assert missing["surveymonkey_recipient_id"] == "recipient_3"
+    assert missing["surveymonkey_response_id"] is None
+    assert missing["surveymonkey_response_status"] is None
+
+
+
+def test_upload_campaign_candidates_from_csv(client):
+    campaign_response = client.post(
+        "/campaigns",
+        json={
+            "name": "Graduate Aptitude Test Survey",
+            "tool_name": "FOT",
+        },
+    )
+    campaign_id = campaign_response.json()["id"]
+
+    csv_bytes = (
+        "candidate_name,email,phone,external_candidate_id\n"
+        "Ada Lovelace,ada@example.com,+2348012345678,cand_001\n"
+        "Grace Hopper,grace@example.com,+2348098765432,cand_002\n"
+    ).encode("utf-8")
+
+    response = client.post(
+        f"/campaigns/{campaign_id}/candidates/upload",
+        files={
+            "file": ("candidates.csv", csv_bytes, "text/csv"),
+        },
+    )
+
+    assert response.status_code == 201
+    data = response.json()
+    assert len(data) == 2
+    assert data[0]["candidate_name"] == "Ada Lovelace"
+    assert data[0]["email"] == "ada@example.com"
+    assert data[0]["tool_name"] == "FOT"
+    assert data[0]["campaign_name"] == "Graduate Aptitude Test Survey"
+    assert data[1]["external_candidate_id"] == "cand_002"
+
+
+
+def test_upload_campaign_candidates_rejects_unknown_file_type(client):
+    campaign_response = client.post(
+        "/campaigns",
+        json={
+            "name": "Graduate Aptitude Test Survey",
+            "tool_name": "FOT",
+        },
+    )
+    campaign_id = campaign_response.json()["id"]
+
+    response = client.post(
+        f"/campaigns/{campaign_id}/candidates/upload",
+        files={
+            "file": ("candidates.txt", b"hello", "text/plain"),
+        },
+    )
+
+    assert response.status_code == 400
+    assert "Unsupported file type" in response.json()["detail"]

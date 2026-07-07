@@ -10,6 +10,11 @@ class OutboundCallAttempt(SQLModel, table=True):
     campaign_id: str = Field(index=True)
     candidate_id: str = Field(index=True)
 
+    candidate_name: str | None = Field(default=None)
+    candidate_email: str | None = Field(default=None, index=True)
+    campaign_name: str | None = Field(default=None)
+    tool_name: str | None = Field(default=None)
+
     phone: str = Field(index=True)
     attempt_number: int = Field(default=1)
 

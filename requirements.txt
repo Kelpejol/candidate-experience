@@ -9,8 +9,10 @@ attrs==26.1.0
 certifi==2026.6.17
 charset-normalizer==3.4.7
 click==8.4.2
+dnspython==2.8.0
 elevenlabs==2.56.0
 email-validator==2.3.0
+et_xmlfile==2.0.0
 fastapi==0.138.2
 frozenlist==1.8.0
 h11==0.16.0
@@ -22,7 +24,10 @@ Jinja2==3.1.6
 MarkupSafe==3.0.3
 multidict==6.7.1
 nodeenv==1.10.0
+numpy==2.5.1
+openpyxl==3.1.5
 packaging==26.2
+pandas==3.0.3
 pluggy==1.6.0
 propcache==0.5.2
 pydantic==2.13.4
@@ -31,9 +36,11 @@ pydantic_core==2.46.4
 Pygments==2.20.0
 PyJWT==2.13.0
 pytest==9.1.1
+python-dateutil==2.9.0.post0
 python-dotenv==1.2.2
 python-multipart==0.0.32
 requests==2.34.2
+six==1.17.0
 SQLAlchemy==2.0.51
 sqlmodel==0.0.39
 starlette==1.3.1
@@ -43,4 +50,5 @@ typing-inspection==0.4.2
 typing_extensions==4.15.0
 urllib3==2.7.0
 uvicorn==0.30.0
+websockets==16.0
 yarl==1.24.2
