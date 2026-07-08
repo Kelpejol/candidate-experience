@@ -1,9 +1,18 @@
+"""API routes for managing recruiting campaigns.
+
+Covers campaign CRUD and lifecycle status, adding/uploading candidates,
+tracking candidate survey status and non-responders, triggering
+SurveyMonkey response syncs (synchronous or via background job), and
+building/managing the outbound call queue (including retries and
+per-attempt status updates), plus enqueueing async jobs backed by the
+Redis job queue.
+"""
 
 from fastapi import APIRouter, Depends, Query, HTTPException, UploadFile, File
 
 from app.services.candidate_import_service import parse_candidate_upload
 
-from app.schemas.campaign import CampaignRead, CampaignCreate, CampaignCandidateRead, CampaignCandidateCreate, CampaignCandidateSurveyStatusUpdate, OutboundCallAttemptRead, CampaignSurveySyncResponse
+from app.schemas.campaign import CampaignRead, CampaignCreate, CampaignCandidateRead, CampaignCandidateCreate, CampaignCandidateSurveyStatusUpdate, OutboundCallAttemptRead, CampaignSurveySyncResponse, OutboundCallAttemptStatusUpdate, CampaignStatusUpdate, CampaignSummaryRead
 from sqlmodel import Session
 from app.services.campaign_service import (
     create_campaign as create_campaign_service,
@@ -16,14 +25,24 @@ from app.services.campaign_service import (
     list_eligible_non_responders as list_eligible_non_responders_service,
     build_outbound_call_queue as build_outbound_call_queue_service,
    list_outbound_call_attempts as list_outbound_call_attempts_service,
-   apply_candidate_survey_updates,
+   get_outbound_call_attempt_by_id,
+   update_outbound_call_attempt_status,
+   build_outbound_retry_queue as build_outbound_retry_queue_service,
+   get_next_queued_outbound_attempt,
+   update_campaign_status,
+   get_campaign_summary as get_campaign_summary_service,
     )
-from app.core.config import get_settings
-from app.integrations.surveymonkey_client import SurveyMonkeyClient
-from app.services.surveymonkey_sync_service import (
-    build_candidate_survey_updates,
-    summarize_collector_responses,
+from app.core.queue import get_default_queue
+from app.core.redis import get_redis_connection
+from app.jobs.outbound_call_jobs import execute_next_outbound_call_job
+from app.jobs.surveymonkey_jobs import sync_campaign_survey_responses_job
+from app.schemas.job import JobQueuedRead
+from app.services.job_queue_service import (
+    enqueue_unique_active_job,
+    get_job_status_value,
 )
+
+from app.services.surveymonkey_sync_service import sync_campaign_survey_responses_for_campaign
 
 from app.core.database import get_session
 
@@ -38,6 +57,7 @@ def create_campaign(
     campaign: CampaignCreate,
     session: Session = Depends(get_session)
 ):
+    """Create and persist a new campaign."""
     return create_campaign_service(campaign, session)
 
 
@@ -48,7 +68,7 @@ def list_campaigns(
     limit: int = Query(50, ge=1, le=100),
     offset: int = Query(0, ge=0)
 ):
-    
+    """List campaigns with pagination."""
     return list_campaigns_service(session, limit, offset=offset)
 
 @router.get("/{campaign_id}", response_model=CampaignRead)
@@ -56,13 +76,56 @@ def get_campaign(
     campaign_id: str,
     session: Session = Depends(get_session)
 ):
-    
+    """Fetch a single campaign by id, raising 404 if it does not exist."""
     campaign = get_campaign_by_id(campaign_id, session)
 
     if not campaign:
         raise HTTPException(status_code=404, detail="Campaign is not found")
-    
+
     return campaign
+
+
+@router.patch("/{campaign_id}/status", response_model=CampaignRead)
+def update_campaign_lifecycle_status(
+    campaign_id: str,
+    status_update: CampaignStatusUpdate,
+    session: Session = Depends(get_session),
+):
+    """Update a campaign's lifecycle status (e.g. draft/active/completed).
+
+    Raises 404 if the campaign does not exist. Persists the status
+    transition via ``update_campaign_status``.
+    """
+    campaign = get_campaign_by_id(campaign_id, session)
+
+    if not campaign:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+
+    return update_campaign_status(
+        campaign=campaign,
+        status_update=status_update,
+        session=session,
+    )
+
+
+@router.get("/{campaign_id}/summary", response_model=CampaignSummaryRead)
+def get_campaign_summary(
+    campaign_id: str,
+    session: Session = Depends(get_session),
+):
+    """Return aggregate summary stats (e.g. counts by status) for a campaign.
+
+    Raises 404 if the campaign does not exist.
+    """
+    campaign = get_campaign_by_id(campaign_id, session)
+
+    if not campaign:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+
+    return get_campaign_summary_service(
+        campaign_id=campaign_id,
+        session=session,
+    )
 
 
 @router.post("/{campaign_id}/candidates", response_model=list[CampaignCandidateRead], status_code=201)
@@ -71,11 +134,16 @@ def add_candidates_to_campaign(
     candidates: list[CampaignCandidateCreate],
     session: Session = Depends(get_session)
 ):
+    """Add one or more candidates to a campaign.
+
+    Raises 404 if the campaign does not exist. Persists the new
+    candidate rows via ``add_campaign_candidates``.
+    """
     campaign = get_campaign_by_id(campaign_id, session)
 
     if not campaign:
          raise HTTPException(status_code=404, detail="Campaign not found")
-    
+
     return add_campaign_candidates(campaign_id, candidates, session)
 
 
@@ -85,11 +153,18 @@ async def upload_candidates_to_campaign(
     file: UploadFile = File(...),
     session: Session = Depends(get_session)
 ):
+    """Add candidates to a campaign by uploading a file (e.g. CSV/XLSX).
+
+    Raises 404 if the campaign does not exist. Reads the full upload
+    into memory, then parses it into candidate records, defaulting the
+    tool/campaign name from the campaign when not present in the file.
+    Raises 400 if the file cannot be parsed (e.g. bad format/headers).
+    """
     campaign = get_campaign_by_id(campaign_id, session)
 
     if not campaign:
         raise HTTPException(status_code=404, detail="Campaign not found")
-    
+
     file_bytes = await file.read()
 
     try:
@@ -100,6 +175,8 @@ async def upload_candidates_to_campaign(
             default_campaign_name=campaign.name,
         )
     except ValueError as exc:
+        # parse_candidate_upload raises ValueError for malformed/unsupported
+        # uploads (bad extension, missing required columns, etc.).
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     return add_campaign_candidates(
@@ -115,12 +192,15 @@ def list_campaign_candidates(
     limit: int = Query(100, ge=1, le=500),
     offset: int = Query(0, ge=0)
 ):
-    
+    """List candidates belonging to a campaign, paginated.
+
+    Raises 404 if the campaign does not exist.
+    """
     campaign = get_campaign_by_id(campaign_id, session)
 
     if not campaign:
         raise HTTPException(status_code=404, detail="Campaign not found")
-    
+
     return list_campaign_candidates_service(
         campaign_id,
         session,
@@ -137,16 +217,20 @@ def update_candidate_survey_status(
     status_update: CampaignCandidateSurveyStatusUpdate,
     session: Session = Depends(get_session),
 ):
+    """Update a candidate's survey status within a campaign (e.g. sent/responded).
+
+    Raises 404 if the campaign or the candidate does not exist.
+    """
     campaign = get_campaign_by_id(campaign_id, session)
 
     if not campaign:
         raise HTTPException(status_code=404, detail="Campaign not found")
-    
+
     candidate = get_campaign_candidate_by_id(campaign_id, candidate_id, session)
 
     if not candidate:
         raise HTTPException(status_code=404, detail="Candidate not found")
-    
+
     return update_campaign_candidate_survey_status(
         candidate,
         status_update,
@@ -161,12 +245,16 @@ def list_eligible_non_responders(
     limit: int = Query(100, ge=1, le=500),
     offset: int = Query(0, ge=0),
 ):
-    
+    """List candidates in a campaign who are eligible for outbound
+    follow-up because they have not responded to the survey.
+
+    Raises 404 if the campaign does not exist.
+    """
     campaign = get_campaign_by_id(campaign_id, session)
 
     if not campaign:
         raise HTTPException(status_code=404, detail="Campaign not found")
-    
+
     return list_eligible_non_responders_service(
        campaign_id,
        session,
@@ -180,68 +268,23 @@ def sync_campaign_survey_responses(
     campaign_id: str,
     session: Session = Depends(get_session),
 ):
-    campaign = get_campaign_by_id(campaign_id, session)
+    """Synchronously fetch and store SurveyMonkey survey responses for a campaign.
 
-    if not campaign:
-        raise HTTPException(status_code=404, detail="Campaign not found")
-
-    if not campaign.survey_id or not campaign.surveymonkey_collector_id:
-        raise HTTPException(
-            status_code=400,
-            detail="Campaign does not have SurveyMonkey survey and collector configured",
+    Calls out to the SurveyMonkey API and writes matched responses to
+    the database. Raises 400 if the campaign is not configured for
+    SurveyMonkey sync (e.g. missing survey/collector ids) or the input
+    is otherwise invalid, and 500 if the sync itself fails (e.g.
+    SurveyMonkey API error).
+    """
+    try:
+        return sync_campaign_survey_responses_for_campaign(
+            campaign_id=campaign_id,
+            session=session,
         )
-
-    settings = get_settings()
-
-    if not settings.surveymonkey_access_token:
-        raise HTTPException(
-            status_code=500,
-            detail="SurveyMonkey access token is not configured",
-        )
-
-    client = SurveyMonkeyClient(
-        base_url=settings.surveymonkey_base_url,
-        access_token=settings.surveymonkey_access_token,
-    )
-
-    recipients = client.list_all_collector_recipients(
-        campaign.surveymonkey_collector_id
-    )
-    responses = client.list_all_survey_responses_bulk(campaign.survey_id)
-
-    summary = summarize_collector_responses(
-        recipients=recipients,
-        responses=responses,
-        collector_id=campaign.surveymonkey_collector_id,
-    )
-
-    candidates = list_campaign_candidates_service(
-        campaign_id=campaign_id,
-        session=session,
-        limit=500,
-        offset=0,
-    )
-
-    updates = build_candidate_survey_updates(
-        candidates=candidates,
-        recipients=recipients,
-        response_summary=summary,
-    )
-
-    updated_candidates = apply_candidate_survey_updates(
-        campaign_id=campaign_id,
-        updates=updates,
-        session=session,
-    )
-
-    return {
-        "total_recipients": summary["total_recipients"],
-        "completed": summary["completed"],
-        "partial": summary["partial"],
-        "non_responders": summary["non_responders"],
-        "updated_candidates": len(updated_candidates),
-    }
-
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
 @router.post("/{campaign_id}/outbound/build-queue", response_model=list[OutboundCallAttemptRead], status_code=201)
@@ -249,12 +292,39 @@ def build_outbound_queue(
     campaign_id: str,
     session: Session = Depends(get_session),
 ):
+    """Build the initial outbound call queue (attempts) for eligible non-responders.
+
+    Raises 404 if the campaign does not exist. Creates new
+    ``OutboundCallAttempt`` rows via ``build_outbound_call_queue_service``.
+    """
     campaign = get_campaign_by_id(campaign_id, session)
 
     if not campaign:
         raise HTTPException(status_code=404, detail="Campaign not found")
 
     return build_outbound_call_queue_service(campaign_id, session)
+
+@router.post("/{campaign_id}/outbound/retry-queue", response_model=list[OutboundCallAttemptRead], status_code=201)
+def build_outbound_retry_queue(
+    campaign_id: str,
+    session: Session = Depends(get_session),
+    max_attempts: int = Query(3, ge=1, le=10),
+):
+    """Build a retry queue of outbound call attempts for candidates
+    that failed/were unreachable, up to ``max_attempts`` tries each.
+
+    Raises 404 if the campaign does not exist.
+    """
+    campaign = get_campaign_by_id(campaign_id, session)
+
+    if not campaign:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+
+    return build_outbound_retry_queue_service(
+        campaign_id=campaign_id,
+        session=session,
+        max_attempts=max_attempts,
+    )
 
 
 @router.get("/{campaign_id}/outbound/attempts", response_model=list[OutboundCallAttemptRead])
@@ -264,6 +334,10 @@ def list_outbound_attempts(
     limit: int = Query(100, ge=1, le=500),
     offset: int = Query(0, ge=0),
 ):
+    """List outbound call attempts for a campaign, paginated.
+
+    Raises 404 if the campaign does not exist.
+    """
     campaign = get_campaign_by_id(campaign_id, session)
 
     if not campaign:
@@ -275,3 +349,150 @@ def list_outbound_attempts(
         limit=limit,
         offset=offset,
     )
+
+
+@router.get("/{campaign_id}/outbound/attempts/next", response_model=OutboundCallAttemptRead)
+def get_next_outbound_attempt(
+    campaign_id: str,
+    session: Session = Depends(get_session),
+):
+    """Fetch the next queued outbound call attempt for a campaign.
+
+    Used by callers (e.g. the outbound call worker) to pick up the next
+    attempt to dial. Raises 404 if the campaign does not exist, or if
+    no attempt is currently queued.
+    """
+    campaign = get_campaign_by_id(campaign_id, session)
+
+    if not campaign:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+
+    attempt = get_next_queued_outbound_attempt(
+        campaign_id=campaign_id,
+        session=session,
+    )
+
+    if not attempt:
+        raise HTTPException(status_code=404, detail="No queued outbound attempt found")
+
+    return attempt
+
+@router.patch(
+    "/{campaign_id}/outbound/attempts/{attempt_id}/status",
+    response_model=OutboundCallAttemptRead,
+)
+def update_outbound_attempt_status(
+    campaign_id: str,
+    attempt_id: str,
+    status_update: OutboundCallAttemptStatusUpdate,
+    session: Session = Depends(get_session),
+):
+    """Update the status of a specific outbound call attempt (e.g. after a call completes).
+
+    Raises 404 if the campaign or the attempt does not exist.
+    """
+    campaign = get_campaign_by_id(campaign_id, session)
+
+    if not campaign:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+
+    attempt = get_outbound_call_attempt_by_id(
+        campaign_id=campaign_id,
+        attempt_id=attempt_id,
+        session=session,
+    )
+
+    if not attempt:
+        raise HTTPException(status_code=404, detail="Outbound call attempt not found")
+
+    return update_outbound_call_attempt_status(
+        attempt=attempt,
+        status_update=status_update,
+        session=session,
+    )
+
+
+@router.post(
+    "/{campaign_id}/survey/sync-responses/jobs",
+    response_model=JobQueuedRead,
+    status_code=202,
+)
+def enqueue_campaign_survey_sync_job(
+    campaign_id: str,
+    session: Session = Depends(get_session),
+):
+    """Enqueue a background job to sync SurveyMonkey survey responses for a campaign.
+
+    Raises 404 if the campaign does not exist, and 400 if it lacks the
+    SurveyMonkey survey/collector configuration needed to sync. Uses
+    ``enqueue_unique_active_job`` so that a second call while a sync job
+    for this campaign is already active/queued reuses that job instead
+    of enqueueing a duplicate.
+    """
+    campaign = get_campaign_by_id(campaign_id, session)
+
+    if not campaign:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+
+    if not campaign.survey_id or not campaign.surveymonkey_collector_id:
+        raise HTTPException(
+            status_code=400,
+            detail="Campaign does not have SurveyMonkey survey and collector configured",
+        )
+
+    queue = get_default_queue()
+    redis_connection = get_redis_connection()
+    job = enqueue_unique_active_job(
+        queue=queue,
+        redis_connection=redis_connection,
+        lock_key=f"campaign:{campaign_id}:survey-sync-job",
+        func=sync_campaign_survey_responses_job,
+        args=(campaign_id,),
+        job_timeout=600,
+        result_ttl=3600,
+        lock_ttl=900,
+    )
+
+    return {
+        "job_id": job.id,
+        "status": get_job_status_value(job),
+    }
+
+
+@router.post(
+    "/{campaign_id}/outbound/execute-next/jobs",
+    response_model=JobQueuedRead,
+    status_code=202,
+)
+def enqueue_next_outbound_call_job(
+    campaign_id: str,
+    session: Session = Depends(get_session),
+):
+    """Enqueue a background job to place the next queued outbound call for a campaign.
+
+    Raises 404 if the campaign does not exist. Uses
+    ``enqueue_unique_active_job`` so concurrent calls do not enqueue
+    duplicate "execute next" jobs for the same campaign.
+    """
+    campaign = get_campaign_by_id(campaign_id, session)
+
+    if not campaign:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+
+    queue = get_default_queue()
+    redis_connection = get_redis_connection()
+    job = enqueue_unique_active_job(
+        queue=queue,
+        redis_connection=redis_connection,
+        lock_key=f"campaign:{campaign_id}:outbound-execute-next-job",
+        func=execute_next_outbound_call_job,
+        args=(campaign_id,),
+        job_timeout=300,
+        result_ttl=3600,
+        lock_ttl=600,
+    )
+
+    return {
+        "job_id": job.id,
+        "status": get_job_status_value(job),
+    }

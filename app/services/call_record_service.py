@@ -1,3 +1,10 @@
+"""Data-access layer for CallRecord entities (inbound/outbound call logs).
+
+Provides CRUD-style helpers used by the API routes and webhook handlers to
+look up, list, create, and update the status of call records, including the
+handoff-to-human sub-flow.
+"""
+
 from sqlmodel import Session, select
 
 from app.models.call_record import CallRecord
@@ -14,8 +21,8 @@ def get_call_record_by_external_id(external_call_id: str, session: Session):
 
 
 def list_call_records(
-    session: Session, 
-    direction: str | None = None, 
+    session: Session,
+    direction: str | None = None,
     disposition: str | None = None,
     tool_name: str | None = None,
     campaign_name: str | None = None,
@@ -24,7 +31,9 @@ def list_call_records(
 
 ):
     """
-    Retrieve all call records.
+    Retrieve call records, optionally filtered by direction, disposition,
+    tool_name, and/or campaign_name, ordered newest-first and paginated
+    with limit/offset.
     """
     statement = select(CallRecord)
     if direction:
@@ -41,7 +50,9 @@ def list_call_records(
 
 def create_call_record(call_record_data: CallRecordCreate, session: Session):
     """
-    Create a new call record.
+    Create a new call record from the given data.
+
+    Side effects: persists the new CallRecord to the DB (add/commit/refresh).
     """
     db_call_record = CallRecord(
         external_call_id=call_record_data.external_call_id,
@@ -73,11 +84,23 @@ def update_call_record_handoff_status(
     dial_bridged: str | None = None,
     recording_url: str | None = None,
 ):
+    """
+    Update a call record with the outcome of a Twilio <Dial> handoff to a
+    human agent (call sid/status/duration/bridged flag, recording URL) and
+    derive the record's disposition from the dial status.
+
+    Params mirror Twilio's DialCallStatus/DialCallSid/DialCallDuration/
+    DialBridged callback fields (passed in as strings, per Twilio's webhook
+    payload format).
+
+    Side effects: persists the changes to the DB (add/commit/refresh).
+    """
     call_record.handoff_call_sid = dial_call_sid
     call_record.handoff_status = dial_call_status
 
     call_record.recording_url = recording_url
 
+    # Twilio sends duration/bridged as strings; convert to native types.
     if dial_call_duration is not None:
         call_record.handoff_duration = int(dial_call_duration)
     if dial_bridged is not None:
@@ -85,7 +108,7 @@ def update_call_record_handoff_status(
     if dial_call_status == "completed":
         call_record.disposition = "handed_off_to_human"
     if dial_call_status in {"failed", "busy", "no-answer"}:
-        call_record.disposition = "handoff_failed"   
+        call_record.disposition = "handoff_failed"
 
     session.add(call_record)
     session.commit()

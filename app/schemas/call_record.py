@@ -1,3 +1,10 @@
+"""Pydantic schemas for inbound/outbound call records (e.g. from voice/webhook events).
+
+Defines the request shape accepted when a call outcome is reported, the
+response shape returned to the caller, and the read shape used to expose a
+stored call record via the API.
+"""
+
 from datetime import datetime
 from pydantic import BaseModel, Field, field_validator
 from typing import Optional, Literal
@@ -18,6 +25,8 @@ CallDisposition = Literal[
     ]
 
 class CallRecordRead(BaseModel):
+    """Response shape for a persisted call record, including handoff details."""
+
     id: str
     external_call_id: str
     direction: str
@@ -38,6 +47,13 @@ class CallRecordRead(BaseModel):
     handoff_bridged: bool | None = None
 
 class CallRecordCreate(BaseModel):
+    """Request shape for reporting a call outcome to be persisted as a call record.
+
+    `direction` and `disposition` are constrained to the CallDirection /
+    CallDisposition literals; `tool_name`, when provided, must be a
+    recognized tool per app.core.vocabulary.is_tool_allowed.
+    """
+
     external_call_id: str = Field(min_length=1)
     direction: CallDirection 
     candidate_phone: str | None = Field(default=None)
@@ -58,6 +74,7 @@ class CallRecordCreate(BaseModel):
     @field_validator("tool_name")
     @classmethod
     def tool_name_must_be_allowed(cls, v: str | None):
+        """Reject tool_name values outside app.core.vocabulary.ALLOWED_TOOLS. None is allowed (field is optional)."""
         if v is not None and not is_tool_allowed(v):
             raise ValueError("Unknown tool name")
         return v    
@@ -65,12 +82,15 @@ class CallRecordCreate(BaseModel):
     @field_validator("external_call_id", "direction", "disposition")
     @classmethod
     def required_string_must_not_be_empty(cls, v: str):
+        """Reject blank/whitespace-only values for these required string fields."""
         if not v or not v.strip():
             raise ValueError("Field must not be empty")
         return v
 
 
 class CallRecordResponse(BaseModel):
+    """Response shape acknowledging receipt of a CallRecordCreate submission."""
+
     accepted: bool
     external_call_id: str
     message: str

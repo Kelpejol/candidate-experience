@@ -1,4 +1,9 @@
+"""Webhook endpoints for the ElevenLabs conversational voice agent.
 
+Handles call-ended notifications, a raw/debug passthrough, and the
+signature-verified ElevenLabs webhook (post-call transcription) used
+to persist finished outbound/inbound calls as call records.
+"""
 
 from fastapi import APIRouter, Depends, Request, HTTPException
 from sqlmodel import Session
@@ -22,12 +27,17 @@ def voice_agent_call_ended(
     session: Session = Depends(get_session),
 ):
     """
-    Webhook endpoint to handle call ended events from the voice agent."""
+    Webhook endpoint to handle call ended events from the voice agent.
+
+    Idempotent: if a call record with this ``external_call_id`` already
+    exists (e.g. the webhook was retried), returns the existing record
+    instead of creating a duplicate. Otherwise persists a new call
+    record.
+    """
     existing_record = get_call_record_by_external_id(
         payload.external_call_id,
         session,
     )
-
 
     if existing_record:
         return CallRecordResponse(
@@ -47,6 +57,12 @@ def voice_agent_call_ended(
 
 @router.post("/raw")
 async def voice_agent_raw_webhook(request: Request):
+    """Debug endpoint that logs the raw JSON body of any voice agent webhook.
+
+    Does not validate, verify, or persist anything - it just prints the
+    payload for inspection and acknowledges receipt. Intended for
+    diagnosing/inspecting unfamiliar webhook payloads during integration.
+    """
     payload = await request.json()
     print("VOICE_AGENT_RAW_WEBHOOK:", payload)
 
@@ -60,6 +76,23 @@ async def elevenlabs_webhook(
     request: Request,
     session: Session = Depends(get_session),
 ):
+    """
+    Verified webhook endpoint for ElevenLabs conversational agent events.
+
+    Verifies the ``elevenlabs-signature`` header against the raw request
+    body using the configured webhook secret (via the ElevenLabs SDK's
+    ``construct_event``), rejecting the request with 401 if verification
+    fails. This must use the raw body (not a re-serialized JSON parse)
+    since the signature is computed over the exact bytes sent. Only
+    ``post_call_transcription`` events are processed; other event types
+    are acknowledged but ignored. On a valid transcription event, maps
+    the payload to a call record and persists it, but is idempotent -
+    if a record for this ``external_call_id`` already exists (e.g. a
+    webhook retry), it is not duplicated.
+
+    Raises 500 if the webhook secret is not configured, and 401 on
+    signature verification failure.
+    """
     settings = get_settings()
     raw_body = await request.body()
     signature = request.headers.get("elevenlabs-signature")
@@ -79,12 +112,16 @@ async def elevenlabs_webhook(
             secret=settings.elevenlabs_webhook_secret,
         )
     except BadRequestError as exc:
+        # construct_event raises BadRequestError for a missing/invalid
+        # signature (or a stale timestamp) - treat as unauthorized.
         raise HTTPException(
             status_code=401,
             detail="Invalid ElevenLabs webhook signature",
         ) from exc
 
     if payload.get("type") != "post_call_transcription":
+        # ElevenLabs sends other event types too; we only care about the
+        # final post-call transcription, so acknowledge and skip the rest.
         return {
             "received": True,
             "message": "Not a post call transcription event",
