@@ -43,6 +43,31 @@ class Settings(BaseSettings):
       surveymonkey_redirect_uri: str | None = None
       surveymonkey_webhook_secret: str | None = None
 
+      zoho_accounts_base_url: str = "https://accounts.zoho.com"
+      zoho_desk_base_url: str = "https://desk.zoho.com/api/v1"
+      zoho_client_id: str | None = None
+      zoho_client_secret: str | None = None
+      zoho_refresh_token: str | None = None
+      zoho_org_id: str | None = None
+      zoho_department_id: str | None = None
+
+      inference_base_url: str | None = None
+      inference_api_key: str | None = None
+
+      kb_dir: str = "kb"
+      chroma_dir: str = "chroma_data"
+      # Cosine-distance ceiling for "the KB actually covers this question".
+      # Calibrated July 2026: real hits scored <=0.32, out-of-scope >=0.46.
+      kb_grounding_threshold: float = 0.40
+
+      # Address drafts are written from (discovered from real outbound threads).
+      helpdesk_from_email: str = "invitation@dragnet-solutions.com"
+      # Safety flag: False = generate drafts into our audit log only.
+      # True = also place them on Zoho tickets (officers will see them).
+      helpdesk_draft_execute: bool = False
+
+      zoho_webhook_token: str | None = None
+
       redis_url: str = "redis://localhost:6379/0"
       rq_default_queue: str = "candidate-experience"
 

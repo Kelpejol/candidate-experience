@@ -11,6 +11,8 @@ from app.models.call_record import CallRecord
 from app.models.campaign import Campaign
 from app.models.campaign_candidate import CampaignCandidate
 from app.models.outbound_call_attempt import OutboundCallAttempt
+from app.models.helpdesk_ticket_mirror import HelpdeskTicketMirror
+from app.models.helpdesk_ai_action import HelpdeskAIAction
 
 settings = get_settings()
 

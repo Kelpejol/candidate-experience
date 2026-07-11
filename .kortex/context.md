@@ -1,6 +1,6 @@
 <!-- Kortex context — auto-generated, do not edit. Add .kortex/ to .gitignore -->
 # Kortex Project Intelligence
-_Generated: 2026-07-08T11:53:47.989Z_
+_Generated: 2026-07-11T19:09:27.705Z_
 
 ## Affirmed Decisions
 
