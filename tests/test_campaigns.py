@@ -618,6 +618,744 @@ def test_sync_campaign_survey_responses_updates_candidates(client, monkeypatch):
     assert missing["surveymonkey_response_status"] is None
 
 
+def test_create_campaign_survey_from_template_updates_campaign(client, monkeypatch):
+    """Verifies that the create-from-template endpoint clones the configured SurveyMonkey template and stores the new survey id on the campaign."""
+    from app.core.config import get_settings
+
+    class FakeSurveyMonkeyClient:
+        def __init__(self, base_url: str, access_token: str):
+            self.created_questions = []
+            pass
+
+        def get_survey_details(self, survey_id: str):
+            if survey_id == "template_123":
+                return {
+                    "category": "customer_feedback",
+                    "pages": [
+                        {
+                            "id": "template_page_123",
+                            "href": "https://example.com/template-page",
+                            "title": "{{campaign_name}} feedback",
+                            "description": "Tell us about the {{tool_name}} assessment",
+                            "position": 1,
+                            "questions": [
+                                {
+                                    "id": "template_question_123",
+                                    "href": "https://example.com/template-question",
+                                    "family": "single_choice",
+                                    "subtype": "vertical",
+                                    "position": 1,
+                                    "visible": True,
+                                    "headings": [{"heading": "How was the {{campaign_name}} test?"}],
+                                    "answers": {
+                                        "choices": [
+                                            {
+                                                "id": "template_choice_123",
+                                                "href": "https://example.com/template-choice",
+                                                "text": "{{tool_name}} was good",
+                                                "position": 1,
+                                                "visible": True,
+                                            }
+                                        ]
+                                    },
+                                }
+                            ],
+                        }
+                    ],
+                }
+
+            assert survey_id == "copied_survey_123"
+            return {"pages": [{"id": "copied_page_123"}]}
+
+        def create_survey(self, title: str, category: str | None = None):
+            assert title == "Graduate Aptitude Test Survey - Assessment Experience Feedback"
+            assert category == "customer_feedback"
+            return {"id": "copied_survey_123"}
+
+        def update_page(self, survey_id: str, page_id: str, payload: dict):
+            assert survey_id == "copied_survey_123"
+            assert page_id == "copied_page_123"
+            assert payload == {
+                "title": "Graduate Aptitude Test Survey feedback",
+                "description": "Tell us about the FOT assessment",
+                "position": 1,
+            }
+            return {"id": page_id}
+
+        def create_question(self, survey_id: str, page_id: str, payload: dict):
+            assert survey_id == "copied_survey_123"
+            assert page_id == "copied_page_123"
+            assert "id" not in payload
+            assert "href" not in payload
+            assert "id" not in payload["answers"]["choices"][0]
+            assert "href" not in payload["answers"]["choices"][0]
+            assert payload["headings"] == [
+                {"heading": "How was the Graduate Aptitude Test Survey test?"}
+            ]
+            assert payload["answers"]["choices"][0]["text"] == "FOT was good"
+            self.created_questions.append(payload)
+            return {"id": "copied_question_123"}
+
+    monkeypatch.setenv("SURVEYMONKEY_ACCESS_TOKEN", "token")
+    monkeypatch.setenv("SURVEYMONKEY_CAMPAIGN_TEMPLATE_SURVEY_ID", "template_123")
+    get_settings.cache_clear()
+    monkeypatch.setattr(
+        "app.services.surveymonkey_campaign_template_service.SurveyMonkeyClient",
+        FakeSurveyMonkeyClient,
+    )
+
+    campaign_response = client.post(
+        "/campaigns",
+        json={
+            "name": "Graduate Aptitude Test Survey",
+            "tool_name": "FOT",
+        },
+    )
+    campaign_id = campaign_response.json()["id"]
+
+    response = client.post(f"/campaigns/{campaign_id}/survey/create-from-template")
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["survey_id"] == "copied_survey_123"
+
+    campaign_detail_response = client.get(f"/campaigns/{campaign_id}")
+    assert campaign_detail_response.json()["survey_id"] == "copied_survey_123"
+
+
+def test_create_campaign_survey_from_template_is_idempotent(client, monkeypatch):
+    """Verifies that create-from-template does not clone again once a campaign already has a SurveyMonkey survey id."""
+    from app.core.config import get_settings
+
+    class FakeSurveyMonkeyClient:
+        def __init__(self, base_url: str, access_token: str):
+            pass
+
+        def get_survey_details(self, survey_id: str):
+            raise AssertionError("SurveyMonkey should not be called when campaign already has survey_id")
+
+    monkeypatch.setenv("SURVEYMONKEY_ACCESS_TOKEN", "token")
+    monkeypatch.setenv("SURVEYMONKEY_CAMPAIGN_TEMPLATE_SURVEY_ID", "template_123")
+    get_settings.cache_clear()
+    monkeypatch.setattr(
+        "app.services.surveymonkey_campaign_template_service.SurveyMonkeyClient",
+        FakeSurveyMonkeyClient,
+    )
+
+    campaign_response = client.post(
+        "/campaigns",
+        json={
+            "name": "Graduate Aptitude Test Survey",
+            "tool_name": "FOT",
+            "survey_id": "existing_survey_123",
+        },
+    )
+    campaign_id = campaign_response.json()["id"]
+
+    response = client.post(f"/campaigns/{campaign_id}/survey/create-from-template")
+
+    assert response.status_code == 200
+    assert response.json()["survey_id"] == "existing_survey_123"
+
+
+def test_create_campaign_survey_from_selected_template(client, monkeypatch):
+    """Verifies that create-from-template can use a template id selected by the caller instead of the env default."""
+    from app.core.config import get_settings
+
+    class FakeSurveyMonkeyClient:
+        def __init__(self, base_url: str, access_token: str):
+            pass
+
+        def get_survey_details(self, survey_id: str):
+            if survey_id == "selected_template_456":
+                return {
+                    "pages": [
+                        {
+                            "title": "Feedback",
+                            "position": 1,
+                            "questions": [],
+                        }
+                    ],
+                }
+
+            assert survey_id == "copied_survey_456"
+            return {"pages": [{"id": "copied_page_456"}]}
+
+        def create_survey(self, title: str, category: str | None = None):
+            assert title == "Graduate Aptitude Test Survey - Assessment Experience Feedback"
+            return {"id": "copied_survey_456"}
+
+        def update_page(self, survey_id: str, page_id: str, payload: dict):
+            assert survey_id == "copied_survey_456"
+            assert page_id == "copied_page_456"
+            return {"id": page_id}
+
+    monkeypatch.setenv("SURVEYMONKEY_ACCESS_TOKEN", "token")
+    monkeypatch.setenv("SURVEYMONKEY_CAMPAIGN_TEMPLATE_SURVEY_ID", "default_template_123")
+    get_settings.cache_clear()
+    monkeypatch.setattr(
+        "app.services.surveymonkey_campaign_template_service.SurveyMonkeyClient",
+        FakeSurveyMonkeyClient,
+    )
+
+    campaign_response = client.post(
+        "/campaigns",
+        json={
+            "name": "Graduate Aptitude Test Survey",
+            "tool_name": "FOT",
+        },
+    )
+    campaign_id = campaign_response.json()["id"]
+
+    response = client.post(
+        f"/campaigns/{campaign_id}/survey/create-from-template",
+        json={"template_survey_id": "selected_template_456"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["survey_id"] == "copied_survey_456"
+
+
+def test_list_survey_templates(client, monkeypatch):
+    """Verifies that the templates endpoint returns SurveyMonkey surveys whose titles are marked as templates."""
+    from app.core.config import get_settings
+
+    class FakeSurveyMonkeyClient:
+        def __init__(self, base_url: str, access_token: str):
+            pass
+
+        def list_all_surveys(self):
+            return [
+                {
+                    "id": "template_123",
+                    "title": "TEMPLATE - Assessment Experience Feedback",
+                    "nickname": "",
+                },
+                {
+                    "id": "normal_survey_123",
+                    "title": "Chevron Live Survey",
+                    "nickname": "",
+                },
+            ]
+
+    monkeypatch.setenv("SURVEYMONKEY_ACCESS_TOKEN", "token")
+    get_settings.cache_clear()
+    monkeypatch.setattr(
+        "app.services.surveymonkey_campaign_template_service.SurveyMonkeyClient",
+        FakeSurveyMonkeyClient,
+    )
+
+    response = client.get("/campaigns/survey/templates")
+
+    assert response.status_code == 200
+    assert response.json() == [
+        {
+            "id": "template_123",
+            "title": "TEMPLATE - Assessment Experience Feedback",
+            "nickname": "",
+        }
+    ]
+
+
+def test_prepare_campaign_survey_recipients_adds_eligible_candidates_without_sending(client, monkeypatch):
+    """Verifies that preparing SurveyMonkey recipients skips opt-outs/no-email and maps returned recipient ids locally."""
+    from app.core.config import get_settings
+
+    class FakeSurveyMonkeyClient:
+        def __init__(self, base_url: str, access_token: str):
+            pass
+
+        def add_message_recipients_bulk(
+            self,
+            collector_id: str,
+            message_id: str,
+            contacts: list[dict],
+        ):
+            assert collector_id == "collector_001"
+            assert message_id == "message_001"
+            assert contacts == [
+                {"email": "ada@example.com"}
+            ]
+            return {
+                "succeeded": [
+                    {
+                        "id": "recipient_001",
+                        "email": "ada@example.com",
+                    }
+                ]
+            }
+
+    monkeypatch.setenv("SURVEYMONKEY_ACCESS_TOKEN", "token")
+    get_settings.cache_clear()
+    monkeypatch.setattr(
+        "app.services.surveymonkey_distribution_service.SurveyMonkeyClient",
+        FakeSurveyMonkeyClient,
+    )
+
+    campaign_response = client.post(
+        "/campaigns",
+        json={
+            "name": "Graduate Aptitude Test Survey",
+            "tool_name": "FOT",
+            "surveymonkey_collector_id": "collector_001",
+        },
+    )
+    campaign_id = campaign_response.json()["id"]
+
+    add_response = client.post(
+        f"/campaigns/{campaign_id}/candidates",
+        json=[
+            {
+                "candidate_name": "Ada Lovelace",
+                "email": "ada@example.com",
+                "external_candidate_id": "cand_001",
+            },
+            {
+                "candidate_name": "Email Opt Out",
+                "email": "optout@example.com",
+                "opted_out_email": True,
+            },
+            {
+                "candidate_name": "No Email",
+                "phone": "+2348012345678",
+            },
+        ],
+    )
+    assert add_response.status_code == 201
+
+    response = client.post(
+        f"/campaigns/{campaign_id}/survey/recipients/prepare",
+        json={"message_id": "message_001"},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "campaign_id": campaign_id,
+        "collector_id": "collector_001",
+        "message_id": "message_001",
+        "eligible_candidates": 1,
+        "skipped_candidates": 2,
+        "prepared_recipients": 1,
+    }
+
+    candidates_response = client.get(f"/campaigns/{campaign_id}/candidates")
+    candidates = candidates_response.json()
+    assert candidates[0]["surveymonkey_recipient_id"] == "recipient_001"
+    assert candidates[0]["survey_status"] == "not_sent"
+    assert candidates[1]["survey_status"] == "not_sent"
+    assert candidates[2]["survey_status"] == "not_sent"
+
+    campaign_detail_response = client.get(f"/campaigns/{campaign_id}")
+    campaign = campaign_detail_response.json()
+    assert campaign["status"] == "uploaded"
+    assert campaign["survey_sent_at"] is None
+
+
+def test_send_campaign_survey_message_requires_confirmation(client, monkeypatch):
+    """Verifies that the send endpoint refuses to send without the exact confirmation phrase."""
+    from app.core.config import get_settings
+
+    class FakeSurveyMonkeyClient:
+        def __init__(self, base_url: str, access_token: str):
+            pass
+
+        def send_collector_message(self, collector_id: str, message_id: str):
+            raise AssertionError("send_collector_message should not be called without confirmation")
+
+    monkeypatch.setenv("SURVEYMONKEY_ACCESS_TOKEN", "token")
+    get_settings.cache_clear()
+    monkeypatch.setattr(
+        "app.services.surveymonkey_distribution_service.SurveyMonkeyClient",
+        FakeSurveyMonkeyClient,
+    )
+
+    campaign_response = client.post(
+        "/campaigns",
+        json={
+            "name": "Graduate Aptitude Test",
+            "tool_name": "FOT",
+            "surveymonkey_collector_id": "collector_001",
+        },
+    )
+    campaign_id = campaign_response.json()["id"]
+
+    response = client.post(
+        f"/campaigns/{campaign_id}/survey/message/send",
+        json={
+            "message_id": "message_001",
+            "confirm_send": "NO",
+        },
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "confirm_send must be SEND_SURVEY_EMAILS"
+
+
+def test_send_campaign_survey_message_marks_prepared_candidates_sent(client, monkeypatch):
+    """Verifies that sending a prepared SurveyMonkey message marks prepared candidates as sent."""
+    from app.core.config import get_settings
+
+    class FakeSurveyMonkeyClient:
+        def __init__(self, base_url: str, access_token: str):
+            pass
+
+        def add_message_recipients_bulk(
+            self,
+            collector_id: str,
+            message_id: str,
+            contacts: list[dict],
+        ):
+            return {
+                "succeeded": [
+                    {
+                        "id": "recipient_001",
+                        "email": "ada@example.com",
+                    }
+                ]
+            }
+
+        def send_collector_message(self, collector_id: str, message_id: str):
+            assert collector_id == "collector_001"
+            assert message_id == "message_001"
+            return {"status": "sent"}
+
+    monkeypatch.setenv("SURVEYMONKEY_ACCESS_TOKEN", "token")
+    get_settings.cache_clear()
+    monkeypatch.setattr(
+        "app.services.surveymonkey_distribution_service.SurveyMonkeyClient",
+        FakeSurveyMonkeyClient,
+    )
+
+    campaign_response = client.post(
+        "/campaigns",
+        json={
+            "name": "Graduate Aptitude Test Survey",
+            "tool_name": "FOT",
+            "surveymonkey_collector_id": "collector_001",
+        },
+    )
+    campaign_id = campaign_response.json()["id"]
+
+    client.post(
+        f"/campaigns/{campaign_id}/candidates",
+        json=[
+            {
+                "candidate_name": "Ada Lovelace",
+                "email": "ada@example.com",
+            }
+        ],
+    )
+    prepare_response = client.post(
+        f"/campaigns/{campaign_id}/survey/recipients/prepare",
+        json={"message_id": "message_001"},
+    )
+    assert prepare_response.status_code == 200
+
+    send_response = client.post(
+        f"/campaigns/{campaign_id}/survey/message/send",
+        json={
+            "message_id": "message_001",
+            "confirm_send": "SEND_SURVEY_EMAILS",
+        },
+    )
+
+    assert send_response.status_code == 200
+    assert send_response.json() == {
+        "campaign_id": campaign_id,
+        "collector_id": "collector_001",
+        "message_id": "message_001",
+        "sent": True,
+        "updated_candidates": 1,
+    }
+
+    candidates_response = client.get(f"/campaigns/{campaign_id}/candidates")
+    assert candidates_response.json()[0]["survey_status"] == "sent"
+
+    campaign_detail_response = client.get(f"/campaigns/{campaign_id}")
+    campaign = campaign_detail_response.json()
+    assert campaign["status"] == "survey_sent"
+    assert campaign["survey_sent_at"] is not None
+
+
+def test_create_campaign_survey_message_creates_collector_and_message_without_sending(client, monkeypatch):
+    """Verifies that creating a SurveyMonkey message draft stores the collector id and does not send anything."""
+    from app.core.config import get_settings
+
+    class FakeSurveyMonkeyClient:
+        def __init__(self, base_url: str, access_token: str):
+            self.sent = False
+
+        def create_email_collector(self, survey_id: str, name: str):
+            assert survey_id == "survey_001"
+            assert name == "Graduate Aptitude Test Email Collector"
+            return {"id": "collector_001"}
+
+        def create_collector_message(self, collector_id: str, subject: str, body: str | None = None, type_: str = "invite"):
+            assert collector_id == "collector_001"
+            assert subject == "Share your assessment experience"
+            assert body == "Please share feedback: [SurveyLink]\n\nPrivacy: [PrivacyLink]\n\nUnsubscribe: [OptOutLink]\n\nFooter: [FooterLink]"
+            assert type_ == "invite"
+            return {"id": "message_001"}
+
+        def send_collector_message(self, collector_id: str, message_id: str):
+            self.sent = True
+            raise AssertionError("send_collector_message should not be called")
+
+    monkeypatch.setenv("SURVEYMONKEY_ACCESS_TOKEN", "token")
+    get_settings.cache_clear()
+    monkeypatch.setattr(
+        "app.services.surveymonkey_distribution_service.SurveyMonkeyClient",
+        FakeSurveyMonkeyClient,
+    )
+
+    campaign_response = client.post(
+        "/campaigns",
+        json={
+            "name": "Graduate Aptitude Test",
+            "tool_name": "FOT",
+            "survey_id": "survey_001",
+        },
+    )
+    campaign_id = campaign_response.json()["id"]
+
+    response = client.post(
+        f"/campaigns/{campaign_id}/survey/message",
+        json={
+            "collector_name": "Graduate Aptitude Test Email Collector",
+            "subject": "Share your assessment experience",
+            "body": "Please share feedback: [SurveyLink]\n\nPrivacy: [PrivacyLink]\n\nUnsubscribe: [OptOutLink]\n\nFooter: [FooterLink]",
+        },
+    )
+
+    assert response.status_code == 201
+    assert response.json() == {
+        "campaign_id": campaign_id,
+        "survey_id": "survey_001",
+        "collector_id": "collector_001",
+        "message_id": "message_001",
+        "subject": "Share your assessment experience",
+    }
+
+    campaign_detail_response = client.get(f"/campaigns/{campaign_id}")
+    assert campaign_detail_response.json()["surveymonkey_collector_id"] == "collector_001"
+
+
+def test_create_campaign_survey_message_requires_survey(client, monkeypatch):
+    """Verifies that message draft creation fails clearly before a campaign survey exists."""
+    from app.core.config import get_settings
+
+    monkeypatch.setenv("SURVEYMONKEY_ACCESS_TOKEN", "token")
+    get_settings.cache_clear()
+
+    campaign_response = client.post(
+        "/campaigns",
+        json={
+            "name": "Graduate Aptitude Test",
+            "tool_name": "FOT",
+        },
+    )
+    campaign_id = campaign_response.json()["id"]
+
+    response = client.post(
+        f"/campaigns/{campaign_id}/survey/message",
+        json={
+            "subject": "Share your assessment experience",
+            "body": "Please share feedback: [SurveyLink]\n\nPrivacy: [PrivacyLink]\n\nUnsubscribe: [OptOutLink]\n\nFooter: [FooterLink]",
+        },
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "Campaign does not have a SurveyMonkey survey configured"
+
+
+def test_create_campaign_survey_message_requires_survey_link_placeholder(client):
+    """Verifies that SurveyMonkey message drafts must include a per-recipient survey link placeholder."""
+    campaign_response = client.post(
+        "/campaigns",
+        json={
+            "name": "Graduate Aptitude Test",
+            "tool_name": "FOT",
+            "survey_id": "survey_001",
+        },
+    )
+    campaign_id = campaign_response.json()["id"]
+
+    response = client.post(
+        f"/campaigns/{campaign_id}/survey/message",
+        json={
+            "subject": "Share your assessment experience",
+            "body": "Please share feedback.",
+        },
+    )
+
+    assert response.status_code == 422
+    assert "Message body must include [SurveyLink] or [FirstQuestion]" in response.text
+
+
+def test_create_campaign_survey_message_allows_omitted_body(client, monkeypatch):
+    """Verifies that callers can omit body and let SurveyMonkey use its default invite body."""
+    from app.core.config import get_settings
+
+    class FakeSurveyMonkeyClient:
+        def __init__(self, base_url: str, access_token: str):
+            pass
+
+        def create_email_collector(self, survey_id: str, name: str):
+            return {"id": "collector_001"}
+
+        def create_collector_message(self, collector_id: str, subject: str, body: str | None = None, type_: str = "invite"):
+            assert body is None
+            return {"id": "message_001"}
+
+    monkeypatch.setenv("SURVEYMONKEY_ACCESS_TOKEN", "token")
+    get_settings.cache_clear()
+    monkeypatch.setattr(
+        "app.services.surveymonkey_distribution_service.SurveyMonkeyClient",
+        FakeSurveyMonkeyClient,
+    )
+
+    campaign_response = client.post(
+        "/campaigns",
+        json={
+            "name": "Graduate Aptitude Test",
+            "tool_name": "FOT",
+            "survey_id": "survey_001",
+        },
+    )
+    campaign_id = campaign_response.json()["id"]
+
+    response = client.post(
+        f"/campaigns/{campaign_id}/survey/message",
+        json={
+            "subject": "Share your assessment experience",
+        },
+    )
+
+    assert response.status_code == 201
+    assert response.json()["message_id"] == "message_001"
+
+
+def test_create_campaign_survey_message_requires_opt_out_placeholder(client):
+    """Verifies that SurveyMonkey message drafts must include the email opt-out placeholder."""
+    campaign_response = client.post(
+        "/campaigns",
+        json={
+            "name": "Graduate Aptitude Test",
+            "tool_name": "FOT",
+            "survey_id": "survey_001",
+        },
+    )
+    campaign_id = campaign_response.json()["id"]
+
+    response = client.post(
+        f"/campaigns/{campaign_id}/survey/message",
+        json={
+            "subject": "Share your assessment experience",
+            "body": "Please share feedback: [SurveyLink]",
+        },
+    )
+
+    assert response.status_code == 422
+    assert "Message body must include [OptOutLink]" in response.text
+
+
+def test_create_campaign_survey_message_requires_footer_placeholder(client):
+    """Verifies that SurveyMonkey message drafts must include the footer placeholder."""
+    campaign_response = client.post(
+        "/campaigns",
+        json={
+            "name": "Graduate Aptitude Test",
+            "tool_name": "FOT",
+            "survey_id": "survey_001",
+        },
+    )
+    campaign_id = campaign_response.json()["id"]
+
+    response = client.post(
+        f"/campaigns/{campaign_id}/survey/message",
+        json={
+            "subject": "Share your assessment experience",
+            "body": "Please share feedback: [SurveyLink]\n\nUnsubscribe: [OptOutLink]",
+        },
+    )
+
+    assert response.status_code == 422
+    assert "Message body must include [FooterLink]" in response.text
+
+
+def test_create_campaign_survey_message_rejects_plain_text_footer_html_token(client):
+    """Verifies that custom plain-text invite bodies do not allow the raw-HTML footer token."""
+    campaign_response = client.post(
+        "/campaigns",
+        json={
+            "name": "Graduate Aptitude Test",
+            "tool_name": "FOT",
+            "survey_id": "survey_001",
+        },
+    )
+    campaign_id = campaign_response.json()["id"]
+
+    response = client.post(
+        f"/campaigns/{campaign_id}/survey/message",
+        json={
+            "subject": "Share your assessment experience",
+            "body": "Please share feedback: [SurveyLink]\n\nPrivacy: [PrivacyLink]\n\nUnsubscribe: [OptOutLink]\n\nFooter: [FooterHTML]",
+        },
+    )
+
+    assert response.status_code == 422
+    assert "Message body must include [FooterLink]" in response.text
+
+
+def test_create_campaign_survey_message_requires_privacy_placeholder(client):
+    """Verifies that SurveyMonkey message drafts must include the privacy placeholder."""
+    campaign_response = client.post(
+        "/campaigns",
+        json={
+            "name": "Graduate Aptitude Test",
+            "tool_name": "FOT",
+            "survey_id": "survey_001",
+        },
+    )
+    campaign_id = campaign_response.json()["id"]
+
+    response = client.post(
+        f"/campaigns/{campaign_id}/survey/message",
+        json={
+            "subject": "Share your assessment experience",
+            "body": "Please share feedback: [SurveyLink]\n\nUnsubscribe: [OptOutLink]\n\nFooter: [FooterLink]",
+        },
+    )
+
+    assert response.status_code == 422
+    assert "Message body must include [PrivacyLink]" in response.text
+
+
+def test_prepare_campaign_survey_recipients_requires_collector(client, monkeypatch):
+    """Verifies that preparing recipients fails clearly when no collector id is configured or supplied."""
+    from app.core.config import get_settings
+
+    monkeypatch.setenv("SURVEYMONKEY_ACCESS_TOKEN", "token")
+    get_settings.cache_clear()
+
+    campaign_response = client.post(
+        "/campaigns",
+        json={
+            "name": "Graduate Aptitude Test Survey",
+            "tool_name": "FOT",
+        },
+    )
+    campaign_id = campaign_response.json()["id"]
+
+    response = client.post(
+        f"/campaigns/{campaign_id}/survey/recipients/prepare",
+        json={"message_id": "message_001"},
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "Campaign does not have a SurveyMonkey collector configured"
+
+
 
 def test_upload_campaign_candidates_from_csv(client):
     """Verifies that uploading a CSV file of candidates creates candidate records with the parsed fields."""

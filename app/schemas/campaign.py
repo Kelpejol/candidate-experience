@@ -109,6 +109,131 @@ class CampaignStatusUpdate(BaseModel):
     status: CampaignStatus
 
 
+class CampaignSurveyTemplateCreate(BaseModel):
+    """Request shape for creating a campaign survey from a selected SurveyMonkey template.
+
+    If `template_survey_id` is omitted, the backend uses the default
+    SURVEYMONKEY_CAMPAIGN_TEMPLATE_SURVEY_ID setting.
+    """
+
+    template_survey_id: str | None = None
+
+
+class CampaignSurveyRecipientsPrepare(BaseModel):
+    """Request shape for adding campaign candidates to a SurveyMonkey message.
+
+    This prepares recipients only. It does not send the email invitation.
+    """
+
+    collector_id: str | None = None
+    message_id: str
+
+
+class CampaignSurveyRecipientsPrepareResponse(BaseModel):
+    """Summary returned after candidate emails are added to a SurveyMonkey message."""
+
+    campaign_id: str
+    collector_id: str
+    message_id: str
+    eligible_candidates: int
+    skipped_candidates: int
+    prepared_recipients: int
+
+
+class CampaignSurveyMessageCreate(BaseModel):
+    """Request shape for creating a SurveyMonkey collector message draft.
+
+    This creates an unsent message only. Recipients and sending are separate
+    explicit steps.
+    """
+
+    collector_id: str | None = None
+    collector_name: str | None = None
+    subject: str = Field(min_length=1)
+    body: str | None = None
+
+    @field_validator("body")
+    @classmethod
+    def body_must_include_surveymonkey_link(cls, v: str | None):
+        """SurveyMonkey requires invite bodies to include survey and opt-out placeholders."""
+        if v is None:
+            return v
+
+        survey_tokens = (
+            "[SurveyLink]",
+            "{{SurveyLink}}",
+            "[FirstQuestion]",
+            "{{FirstQuestion}}",
+        )
+
+        opt_out_tokens = (
+            "[OptOutLink]",
+            "{{OptOutLink}}",
+        )
+        footer_tokens = (
+            "[FooterLink]",
+            "{{FooterLink}}",
+        )
+        privacy_tokens = (
+            "[PrivacyLink]",
+            "{{PrivacyLink}}",
+        )
+
+        if not any(token in v for token in survey_tokens):
+            raise ValueError("Message body must include [SurveyLink] or [FirstQuestion]")
+
+        if not any(token in v for token in opt_out_tokens):
+            raise ValueError("Message body must include [OptOutLink]")
+
+        if not any(token in v for token in footer_tokens):
+            raise ValueError("Message body must include [FooterLink]")
+
+        if not any(token in v for token in privacy_tokens):
+            raise ValueError("Message body must include [PrivacyLink]")
+
+        return v
+
+
+class CampaignSurveyMessageCreateResponse(BaseModel):
+    """Response after creating a SurveyMonkey collector/message draft."""
+
+    campaign_id: str
+    survey_id: str
+    collector_id: str
+    message_id: str
+    subject: str
+
+
+class CampaignSurveyMessageSend(BaseModel):
+    """Request shape for sending a prepared SurveyMonkey message.
+
+    Sending is irreversible, so callers must pass the exact confirmation
+    phrase in `confirm_send`.
+    """
+
+    collector_id: str | None = None
+    message_id: str
+    confirm_send: str
+
+
+class CampaignSurveyMessageSendResponse(BaseModel):
+    """Response after SurveyMonkey accepts a message send request."""
+
+    campaign_id: str
+    collector_id: str
+    message_id: str
+    sent: bool
+    updated_candidates: int
+
+
+class SurveyMonkeyTemplateRead(BaseModel):
+    """Response shape for a SurveyMonkey survey that can be used as a template."""
+
+    id: str
+    title: str
+    nickname: str | None = None
+
+
 class CampaignSummaryRead(BaseModel):
     """Response shape aggregating a campaign's candidate counts by survey status, call status, and outbound attempt outcome."""
 

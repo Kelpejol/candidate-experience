@@ -14,70 +14,82 @@ The PSA is clear about the separation:
 
 These are not abandoned. They are blocked because they need external platform access, provider configuration, live credentials, or real telephony setup.
 
-### SurveyMonkey Blocked Items
+### SurveyMonkey Campaign Survey Status
 
-Status: blocked until SurveyMonkey access/scopes are available again.
+Status: functionally complete for this phase. SurveyMonkey is no longer a
+backend blocker.
 
-What is already working:
+What is working:
 
-- SurveyMonkey API token can list surveys.
-- We can fetch collectors.
-- We can fetch collector recipients.
-- We can bulk-fetch responses.
-- We can sync campaign candidates to `responded`, `partial_response`, or `non_responder`.
-- Slow SurveyMonkey sync now runs through Redis/RQ.
+- SurveyMonkey API token and scopes are working.
+- The backend can list SurveyMonkey template surveys.
+- The backend can clone a selected template into a campaign-specific survey.
+- Template placeholders such as `{{campaign_name}}`, `{{campaign_title}}`,
+  `{{assessment_name}}`, and `{{tool_name}}` are interpolated during cloning.
+- The backend can create an email collector and invitation message.
+- The backend can prepare campaign candidates as SurveyMonkey recipients.
+- The backend can send the SurveyMonkey invitation after explicit confirmation.
+- SurveyMonkey owns the email body/layout by default; our backend only sets
+  the subject unless a custom body is intentionally supplied.
+- The backend can bulk-fetch collector recipients and survey responses.
+- The backend can sync candidates to `responded`, `partial_response`, or
+  `non_responder`.
+- The completed real test invite synced successfully:
+  - survey `423001176`
+  - collector `440321814`
+  - email `paul@dragnet-solutions.com`
+  - response status `completed`
+- Slow SurveyMonkey sync runs through Redis/RQ.
 - Duplicate sync jobs are prevented with a Redis job lock.
+- SurveyMonkey test-send and completed-sync check scripts exist.
 
-Still blocked:
+Remaining SurveyMonkey work is product/ops polish, not a blocked backend item:
 
-1. Survey template selection
-   - Fetch available SurveyMonkey survey templates or approved template surveys.
-   - Let an officer choose the template from our app.
-   - Store the selected template against the campaign.
+1. Finalize approved SurveyMonkey templates
+   - Keep template survey names prefixed with `TEMPLATE -`.
+   - Confirm the final campaign feedback template questions.
+   - Confirm the final CSAT template questions.
+   - Keep real/live campaign surveys separate from template surveys.
 
-2. Survey copy/create for each campaign
-   - Copy the selected template into a campaign-specific survey.
-   - Interpolate campaign values such as `{{campaign_name}}`, `{{tool_name}}`, and `{{support_contact}}`.
-   - Store the new campaign `survey_id`.
+2. Decide subject-line defaults
+   - Example campaign subject: `Share your assessment experience`.
+   - Example CSAT subject: `How was your support experience?`.
+   - The backend can set subject; SurveyMonkey should keep the email body
+     design/layout.
 
-3. Collector creation
-   - Create or configure an email collector for the campaign survey.
-   - Store the `collector_id`.
+3. Build officer-facing UI later
+   - Create campaign.
+   - Upload/import candidates.
+   - Select a SurveyMonkey template.
+   - Create the campaign survey.
+   - Prepare recipients.
+   - Confirm and send.
+   - View sync status and non-responders.
 
-4. Recipient/contact upload into SurveyMonkey
-   - Push campaign candidates into SurveyMonkey as recipients.
-   - Store SurveyMonkey `recipient_id` back on each `CampaignCandidate`.
-
-5. Email invitation sending
-   - Send the survey email through SurveyMonkey.
-   - Store the message/send metadata if SurveyMonkey exposes it.
-   - Move campaign status to `survey_sent`.
-
-6. SurveyMonkey webhook setup
-   - Register webhook for survey response events.
+4. Optional SurveyMonkey webhook setup
+   - Register webhook for survey response events if we want near-real-time
+     updates.
    - Verify webhook signature/secret.
-   - Update candidate response status when SurveyMonkey sends events.
-   - Keep the bulk sync as a fallback/reconciliation job.
+   - Keep bulk sync as the reconciliation fallback.
 
-7. CSAT survey flow
-   - Configure a separate CSAT survey template.
-   - Send CSAT after eligible inbound/support calls.
-   - Link CSAT response back to the call record.
+5. CSAT survey flow
+   - Use the configured CSAT template.
+   - Send CSAT after eligible inbound/support calls or resolved helpdesk
+     tickets.
+   - Link CSAT response back to the call record or ticket record.
 
-Required SurveyMonkey details later:
+Current useful SurveyMonkey env values:
 
 ```env
 SURVEYMONKEY_ACCESS_TOKEN=
 SURVEYMONKEY_CLIENT_ID=
 SURVEYMONKEY_CLIENT_SECRET=
-SURVEYMONKEY_CAMPAIGN_SURVEY_ID=
-SURVEYMONKEY_CAMPAIGN_COLLECTOR_ID=
-SURVEYMONKEY_CSAT_SURVEY_ID=
-SURVEYMONKEY_CSAT_COLLECTOR_ID=
+SURVEYMONKEY_CAMPAIGN_TEMPLATE_SURVEY_ID=
+SURVEYMONKEY_CSAT_TEMPLATE_SURVEY_ID=
 SURVEYMONKEY_WEBHOOK_SECRET=
 ```
 
-Needed scopes later:
+SurveyMonkey scopes currently needed:
 
 - View Surveys
 - Create/Modify Surveys
@@ -87,27 +99,44 @@ Needed scopes later:
 - Create/Modify Contacts
 - View Responses
 - View Response Details
-- View Webhooks
-- Create/Modify Webhooks
+- View Webhooks and Create/Modify Webhooks only if we add webhooks.
 
 ### Telephony + ElevenLabs Blocked Items
 
-Status: blocked until the SIP path and ElevenLabs phone setup are live. Needs IT.
+Status: blocked until the live SIP/telephony path and ElevenLabs phone setup
+are configured.
 
-Direction update (July 2026): we are likely NOT using DIDWW. The current
-direction is to use our existing self-hosted 3CX as the SIP endpoint:
+Decision still needed: use 3CX as the SIP endpoint, use DIDWW as the Nigerian
+DID/SIP provider, or use DIDWW for the public Nigerian number while routing
+handoff/officer calls through 3CX.
 
-- Open port 5060 on the 3CX host for SIP traffic from ElevenLabs.
-- Firewall allowlist the ElevenLabs SIP origination/termination IPs.
-- Connect ElevenLabs to 3CX as a SIP trunk (inbound calls route from 3CX to
-  the ElevenLabs agent; outbound calls from ElevenLabs go out through 3CX).
-- This also simplifies handoff: the AI leg and the officer leg live on the
-  same 3CX, instead of dial-and-bridge across carriers.
+Current options:
 
-This is blocked on IT (firewall change, 3CX trunk configuration). The DIDWW
-items below are kept for reference in case the 3CX route falls through; the
-ElevenLabs-side items (agent IDs, phone number ID, webhooks, live call tests)
-apply either way.
+1. 3CX-first path
+   - Use the existing self-hosted 3CX as the SIP endpoint.
+   - Open/allow the required SIP/RTP ports on the 3CX host.
+   - Firewall allowlist ElevenLabs SIP origination/termination IPs.
+   - Connect ElevenLabs to 3CX as a SIP trunk.
+   - Route inbound calls from 3CX to the ElevenLabs agent.
+   - Route outbound calls from ElevenLabs through 3CX.
+   - Handoff is simpler because the AI leg and officer leg can stay inside
+     the same phone system.
+
+2. DIDWW-first path
+   - Buy/configure the Nigerian DID.
+   - Enable inbound SIP forwarding.
+   - Enable outbound trunking for Nigerian local calls.
+   - Connect DIDWW SIP services to ElevenLabs.
+   - Use 3CX mainly for officer/handoff destinations and recordings.
+
+3. Hybrid path
+   - DIDWW owns the public Nigerian number and carrier routing.
+   - ElevenLabs owns the AI agent/call automation.
+   - 3CX owns internal officer extensions, handoff handling, and possibly
+     human-leg recording.
+
+The ElevenLabs-side items (agent IDs, phone number ID, webhooks, live call
+tests) apply whichever telephony path we choose.
 
 What is already working:
 
@@ -120,38 +149,49 @@ What is already working:
 
 Still blocked:
 
-1. DIDWW DID purchase/configuration
+1. Telephony route decision
+   - Decide whether production uses 3CX-first, DIDWW-first, or hybrid.
+   - Confirm who owns firewall/SIP changes.
+   - Confirm who owns call recording for AI leg and human handoff leg.
+
+2. 3CX SIP configuration, if using 3CX
+   - Open/allow required SIP/RTP traffic.
+   - Configure ElevenLabs SIP trunk/extension routing.
+   - Confirm inbound routing from candidate-facing number to ElevenLabs.
+   - Confirm outbound routing from ElevenLabs to Nigerian candidates.
+   - Confirm handoff routing to officer extensions/queues.
+
+3. DIDWW configuration, if using DIDWW
    - Buy/configure the Nigerian DID.
    - Confirm inbound channels.
-   - Confirm inbound SIP routing into ElevenLabs.
-
-2. DIDWW outbound trunk
+   - Enable inbound SIP forwarding.
    - Enable outbound trunking.
    - Confirm Nigerian local routing.
    - Confirm outbound concurrency.
    - Confirm caller ID presentation.
+   - Ask DIDWW support to enable Call Events/CDR webhook if we use DIDWW.
 
-3. ElevenLabs telephony setup
-   - Connect DIDWW/SIP to ElevenLabs.
+4. ElevenLabs telephony setup
+   - Connect the chosen SIP path to ElevenLabs.
    - Confirm the ElevenLabs phone number ID.
    - Confirm the outbound agent ID.
    - Configure the inbound support agent and outbound survey agent separately.
 
-4. Live inbound call test
-   - Candidate calls Nigerian DID.
-   - DIDWW routes to ElevenLabs.
+5. Live inbound call test
+   - Candidate calls the Nigerian/candidate-facing number.
+   - Telephony provider routes to ElevenLabs.
    - ElevenLabs agent answers.
    - Webhook lands in our backend.
    - Call record is created.
 
-5. Live outbound call test
+6. Live outbound call test
    - Our backend creates outbound attempt.
    - Redis worker submits the attempt to ElevenLabs batch calls.
-   - ElevenLabs calls through DIDWW.
+   - ElevenLabs calls through the chosen SIP/telephony path.
    - Candidate receives the call.
    - ElevenLabs webhook updates call/campaign record.
 
-6. Handoff to 3CX
+7. Handoff to 3CX/officer
    - Confirm whether ElevenLabs transfer handles the full desired handoff.
    - Candidate hears hold message.
    - Officer hears AI handover context.
@@ -159,12 +199,11 @@ Still blocked:
    - Confirm whether ElevenLabs recording covers handoff or only AI part.
    - Confirm whether 3CX recording covers the human part.
 
-7. DIDWW CDR/call events
-   - Ask DIDWW support to enable Call Events/CDR webhook.
-   - Store carrier call ID/status/duration/SIP status.
+8. Carrier/PBX call events
+   - Store carrier/PBX call ID/status/duration/SIP status where available.
    - Use this for billing reconciliation and SIP debugging.
 
-Required ElevenLabs/DIDWW details later:
+Required ElevenLabs/telephony details later:
 
 ```env
 ELEVENLABS_API_KEY=
@@ -212,6 +251,111 @@ Still blocked (needs admin):
 
 Interim: a scheduled polling sync (RQ) keeps the mirror fresh without
 webhooks, and stays afterwards as the reconciliation fallback.
+
+### Zoho Integration Account — Identity/Permissions Decision Needed
+
+Status: blocked on a team decision, not a technical blocker. For discussion
+with Olumide/IT before choosing a path.
+
+The problem: our API integration (`ZOHO_CLIENT_ID`/`ZOHO_CLIENT_SECRET`/
+`ZOHO_REFRESH_TOKEN` in `.env`) was created under `tech@dragnet-solutions.com`.
+Checking Zoho's own role/profile data (`scripts/check_zoho_agents.py`) shows:
+
+```text
+tech@dragnet-solutions.com        -> profile: Light Agent   (restricted tier)
+chizoba / elizabeth / fisayo      -> profile: Agent
+janet / olumide                   -> profile: Support Administrator (full admin)
+```
+
+`tech@` being a Light Agent explains the "Insufficient Privileges" error on
+Setup → Automation → Workflows, and is a real risk for the parts of our
+pipeline that write to Zoho (draft replies, tags, priority, assignment) —
+those have never been tested for real yet (still gated off by
+`HELPDESK_DRAFT_EXECUTE` / `HELPDESK_TAG_EXECUTE`), and Light Agent accounts
+commonly cannot perform them at all.
+
+Asked Olumide (2026-07-13) about upgrading `tech@` to a full Agent/Admin
+profile: not straightforward — Zoho Desk licenses are per-seat, so upgrading
+`tech@` would mean removing the license/role from an existing person (e.g.
+Janet or Olumide himself). Olumide first offered his own personal login as a
+stopgap; decided against that (would attribute every AI action to him
+personally in Zoho's audit trail, and breaks if his password changes or he
+leaves).
+
+**Decision (2026-07-13): requested a new, dedicated Zoho seat/license
+(`stella@dragnet-solutions.com`) for the AI integration instead** — a real
+service identity, not a personal account. IT to confirm profile assigned.
+
+Two separate permission needs to confirm with IT for `stella`, since one
+license tier may not cover both:
+
+1. **Agent profile** (same tier as Chizoba/Elizabeth/Fisayo) is enough for
+   everything our API integration does: ticket reads, comments, draft
+   replies, tags, priority, assignment. This is the minimum needed to flip
+   `HELPDESK_DRAFT_EXECUTE`/`HELPDESK_TAG_EXECUTE` on safely.
+2. **Support Administrator profile** is separately required for the
+   Setup → Automation → Workflows page (the webhook rule) — and that page
+   can only ever be operated by a human in a browser, regardless of
+   `stella`'s profile. If `stella` is only Agent-tier, Olumide or Janet still
+   need to personally do the one-time workflow rule setup; if IT gives
+   `stella` Support Administrator too, `stella`'s login could eventually
+   cover that as well.
+
+Once `stella`'s credentials exist: re-run the Self Client → grant code →
+refresh token exchange we did originally under `tech@`, and swap `.env`.
+No code changes needed. Reads (ticket sync, classification) are unaffected
+either way; this only matters for the write path.
+
+### SharePoint Knowledge Base Connector
+
+Status: Candidate Experience team created the site (2026-07-13):
+`https://dragnetnigeria.sharepoint.com/sites/candidateexperience/...`,
+existing FAQ content lives there in a document (not yet a clean table).
+Content work can start now; the connector is blocked on an Azure AD app
+registration.
+
+What's already built: the KB pipeline (`app/services/helpdesk_kb_service.py`)
+is source-agnostic — `load_kb_chunks()` currently reads local `kb/*.md`
+files, but chunking/embedding/indexing downstream doesn't care where chunks
+come from. Swapping to SharePoint is a new loader function only.
+
+Content decision (revised 2026-07-13): do **not** require converting the
+existing FAQ document into an Excel table. As long as each FAQ is its own
+heading (Heading 1/2 in Word) with the answer below it, the loader can split
+on headings exactly like the local `kb/*.md` files — much less rework than
+re-authoring into rows. Only reformat further if the existing doc mixes
+several topics into unstructured paragraphs (bad for retrieval regardless of
+file format). No "Sensitive" flag is required in the KB content itself —
+sensitive categories (complaints, payments, results, identity) are already
+blocked from drafting upstream, by the classifier/decision layer, before the
+KB is ever consulted (see `app/services/helpdesk_decision.py`).
+
+Progress (2026-07-16), verified with `scripts/check_sharepoint_access.py`
+(tests each permission layer in order and reports exactly which one fails):
+
+1. ✅ Azure AD app registered by the user themselves: "Dragnet Candidate
+   Experience KB Reader", client id `1092cc2d-6fcc-4fc4-9b19-99d1c2f819dc`.
+   Client secret created; `KB_READER_TENANT_ID`/`KB_READER_CLIENT_ID`/
+   `KB_READER_SECRET_VALUE` in `.env`. Token acquisition confirmed working.
+2. ✅ Microsoft Graph `Sites.Selected` application permission requested and
+   **admin-consented** by IT (confirmed: error moved from 401 → 403).
+3. ⬜ **Still blocked**: the per-site grant — this app has not yet been
+   explicitly given access to the candidateexperience site itself. This is
+   a separate step from admin consent and needs someone with SharePoint
+   Administrator (or Global Admin) rights to run two Graph API calls in
+   Graph Explorer (GET the site id, then POST to
+   `/sites/{id}/permissions` granting our app's client id `read` access).
+   Full request bodies are in the chat history from 2026-07-16.
+
+Once step 3 is done, rerun `scripts/check_sharepoint_access.py` — if it
+passes, the connector can be pointed at the real FAQ document.
+
+Interim/permanent plan either way: poll on a schedule (same RQ pattern as
+the Zoho sync) — check the file's last-modified timestamp, and if changed,
+rebuild the whole KB index (same `rebuild_kb_index()` we already have, just
+fed by a different loader). No need for Graph webhooks/change
+notifications; full-rebuild-on-change is simple and already proven with the
+local KB folder.
 
 ## Helpdesk Understanding
 
@@ -695,7 +839,9 @@ Store CSAT invitation locally
 Sync CSAT response later
 ```
 
-This depends on SurveyMonkey access, so it is also blocked for now.
+SurveyMonkey access is now available, so this is no longer blocked by
+SurveyMonkey. It is pending product timing: decide whether ticket CSAT belongs
+in the helpdesk phase now or after the calling-agent telephony work is live.
 
 ## Helpdesk External Setup Needed
 
@@ -755,7 +901,9 @@ Do not start with full WhatsApp automation until:
 
 ## Current Next Move
 
-Since SurveyMonkey and telephony are blocked, the next useful work is:
+Since SurveyMonkey is functionally complete for this phase, the remaining
+calling-agent blocker is live telephony. If telephony stays blocked by
+provider/IT setup, the next useful work is:
 
 ```text
 Zoho Desk connector
@@ -764,4 +912,3 @@ Zoho Desk connector
 -> Zoho webhook ingestion
 -> WhatsApp flow after Meta approval
 ```
-

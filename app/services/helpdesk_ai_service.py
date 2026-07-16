@@ -1,4 +1,4 @@
-from sqlmodel import Session
+from sqlmodel import Session, select
 import re
 
 
@@ -8,7 +8,30 @@ from app.models.helpdesk_ticket_mirror import HelpdeskTicketMirror
 from app.services.helpdesk_classifier import classify_ticket
 from app.services.helpdesk_decision import TicketDecision, decide_ticket_action
 from app.services.helpdesk_draft_service import generate_draft_reply
+from app.services.helpdesk_executor_service import execute_ticket_action
 from app.services.helpdesk_kb_service import GroundingResult, retrieve_grounding
+
+# Decision action -> mirror.ai_disposition value (plan doc vocabulary).
+_DISPOSITION_BY_ACTION = {
+    "draft_reply": "drafted",
+    "route_to_human": "routed_to_human",
+    "tag_only": "no_action",
+}
+
+# Mail-server bounce notifications (mailer-daemon / MS Exchange NDRs) land in
+# Zoho as regular tickets from a bulk campaign send with bad addresses. They
+# are not candidates and burn a classifier call for nothing — filtered out
+# before any LLM call, not just routed after one. Detected primarily by the
+# "from" address being on our OWN domain (a real candidate never emails from
+# dragnet-solutions.com), with the subject prefix as a backup signal.
+_OUR_DOMAIN_SUFFIX = "@dragnet-solutions.com"
+_BOUNCE_SUBJECT_PREFIXES = ("undeliverable:", "delivery has failed", "mail delivery failed")
+
+
+def is_system_bounce_notification(mirror: HelpdeskTicketMirror) -> bool:
+    email = (mirror.candidate_email or "").lower()
+    subject = (mirror.subject or "").strip().lower()
+    return email.endswith(_OUR_DOMAIN_SUFFIX) or subject.startswith(_BOUNCE_SUBJECT_PREFIXES)
 
 
 def apply_grounding_gate(
@@ -41,6 +64,22 @@ def process_ticket(session: Session, zoho_client, mirror: HelpdeskTicketMirror) 
     is True (and then only an unsent draft an officer must approve); with the
     flag off this is a full dry run — drafts land in HelpdeskAIAction.draft_text.
     """
+    if is_system_bounce_notification(mirror):
+        # No candidate here — skip classification/grounding/drafting entirely
+        # (saves an LLM call, not just a wasted route_to_human).
+        mirror.ai_disposition = "no_action"
+        session.add(mirror)
+        action = HelpdeskAIAction(
+            zoho_ticket_id=mirror.zoho_ticket_id,
+            action_type="tag_only",
+            rule="system_bounce_notification",
+            reason="Mail-server bounce notification, not a candidate message.",
+            executed=False,
+        )
+        action.executed = execute_ticket_action(zoho_client, mirror, action)
+        session.add(action)
+        return action
+
     body = get_latest_candidate_message(zoho_client, mirror.zoho_ticket_id)
 
     classification = classify_ticket(subject=mirror.subject or "", body=body)
@@ -96,6 +135,7 @@ def process_ticket(session: Session, zoho_client, mirror: HelpdeskTicketMirror) 
     mirror.issue_category = classification.issue_category
     mirror.tool_name = classification.tool_name or mirror.tool_name
     mirror.campaign_name = classification.campaign_name or mirror.campaign_name
+    mirror.ai_disposition = _DISPOSITION_BY_ACTION.get(decision.action)
     session.add(mirror)
 
     action = HelpdeskAIAction(
@@ -112,9 +152,62 @@ def process_ticket(session: Session, zoho_client, mirror: HelpdeskTicketMirror) 
         reason=decision.reason,
         executed=executed,
     )
+    tag_executed = execute_ticket_action(zoho_client, mirror, action)
+    action.executed = executed or tag_executed
     session.add(action)
     return action
 
+
+
+def _latest_action_time(session: Session, zoho_ticket_id: str):
+    """Return the created_at of the most recent HelpdeskAIAction for a ticket, or None."""
+    latest = session.exec(
+        select(HelpdeskAIAction)
+        .where(HelpdeskAIAction.zoho_ticket_id == zoho_ticket_id)
+        .order_by(HelpdeskAIAction.created_at.desc())
+        .limit(1)
+    ).first()
+    return latest.created_at if latest else None
+
+
+def find_pending_tickets(session: Session, limit: int = 50) -> list[HelpdeskTicketMirror]:
+    """Open tickets that have never been processed, or were updated by Zoho
+    (a new candidate reply) since our last decision on them.
+
+    This is what makes the pipeline self-triggering rather than something we
+    run by hand: the sync job upserts mirrors from Zoho, this finds the ones
+    that are new or changed, and process_pending_tickets acts on them.
+    """
+    open_mirrors = session.exec(
+        select(HelpdeskTicketMirror)
+        .where(HelpdeskTicketMirror.zoho_status == "Open")
+        .order_by(HelpdeskTicketMirror.ticket_created_at.desc())
+    ).all()
+
+    pending = []
+    for mirror in open_mirrors:
+        last_action_at = _latest_action_time(session, mirror.zoho_ticket_id)
+        if last_action_at is None or (mirror.last_synced_at or mirror.updated_at) > last_action_at:
+            pending.append(mirror)
+        if len(pending) >= limit:
+            break
+    return pending
+
+
+def process_pending_tickets(session: Session, zoho_client, limit: int = 50) -> dict:
+    """Run process_ticket on every pending ticket and commit once at the end.
+
+    Returns a per-action tally, e.g. {"draft_reply": 3, "route_to_human": 1}.
+    Intended to be called from a scheduled/enqueued job (see
+    app/jobs/helpdesk_ai_jobs.py) right after the mirror sync, so new
+    candidate messages get a decision without anyone running a script.
+    """
+    tally: dict[str, int] = {}
+    for mirror in find_pending_tickets(session, limit=limit):
+        action = process_ticket(session, zoho_client, mirror)
+        tally[action.action_type] = tally.get(action.action_type, 0) + 1
+    session.commit()
+    return tally
 
 
 def get_latest_candidate_message(zoho_client, zoho_ticket_id: str) -> str:

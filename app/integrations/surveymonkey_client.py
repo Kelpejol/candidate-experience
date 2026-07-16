@@ -39,6 +39,50 @@ class SurveyMonkeyClient:
         response.raise_for_status()
         return response.json()
 
+    def _post(self, path: str, payload: dict | None = None) -> dict:
+        """Issue an authenticated POST to `path` and return the parsed JSON body."""
+        response = requests.post(
+            f"{self.base_url}{path}",
+            headers=self._headers(),
+            json=payload or {},
+            timeout=30,
+        )
+        response.raise_for_status()
+
+        if not response.content:
+            return {}
+
+        return response.json()
+
+    def _patch(self, path: str, payload: dict | None = None) -> dict:
+        """Issue an authenticated PATCH to `path` and return the parsed JSON body."""
+        response = requests.patch(
+            f"{self.base_url}{path}",
+            headers=self._headers(),
+            json=payload or {},
+            timeout=30,
+        )
+        response.raise_for_status()
+
+        if not response.content:
+            return {}
+
+        return response.json()
+
+    def _delete(self, path: str) -> dict:
+        """Issue an authenticated DELETE to `path` and return the parsed JSON body."""
+        response = requests.delete(
+            f"{self.base_url}{path}",
+            headers=self._headers(),
+            timeout=30,
+        )
+        response.raise_for_status()
+
+        if not response.content:
+            return {}
+
+        return response.json()
+
     def _get_all_pages(self, path: str) -> list[dict]:
         """Page through a SurveyMonkey list endpoint and return all items.
 
@@ -86,6 +130,10 @@ class SurveyMonkeyClient:
         response.raise_for_status()
         return response.json()
 
+    def list_all_surveys(self) -> list[dict]:
+        """Fetch every survey accessible to the authenticated account."""
+        return self._get_all_pages("/surveys")
+
 
     def list_collectors(self, survey_id: str) -> dict:
         """Fetch the first page of collectors (distribution channels) for a survey."""
@@ -96,6 +144,59 @@ class SurveyMonkeyClient:
         )
         response.raise_for_status()
         return response.json()
+
+    def create_email_collector(self, survey_id: str, name: str) -> dict:
+        """Create an email collector for a survey."""
+        return self._post(
+            f"/surveys/{survey_id}/collectors",
+            payload={
+                "type": "email",
+                "name": name,
+            },
+        )
+
+    def create_collector_message(
+        self,
+        collector_id: str,
+        subject: str,
+        body: str | None = None,
+        type_: str = "invite",
+    ) -> dict:
+        """Create an email invitation message under a collector."""
+        message = self._post(
+            f"/collectors/{collector_id}/messages",
+            payload={
+                "type": type_,
+            },
+        )
+        message_id = str(message["id"])
+        payload = {"subject": subject}
+
+        if body:
+            payload["body_text"] = body
+
+        return self._patch(
+            f"/collectors/{collector_id}/messages/{message_id}",
+            payload=payload,
+        )
+
+    def add_message_recipients_bulk(
+        self,
+        collector_id: str,
+        message_id: str,
+        contacts: list[dict],
+    ) -> dict:
+        """Add recipients to a collector message without sending the message."""
+        return self._post(
+            f"/collectors/{collector_id}/messages/{message_id}/recipients/bulk",
+            payload={"contacts": contacts},
+        )
+
+    def send_collector_message(self, collector_id: str, message_id: str) -> dict:
+        """Send a prepared collector message to its recipients."""
+        return self._post(
+            f"/collectors/{collector_id}/messages/{message_id}/send",
+        )
 
 
     def list_collector_recipients(self, collector_id: str) -> dict:
@@ -112,6 +213,40 @@ class SurveyMonkeyClient:
     def get_survey_details(self, survey_id: str) -> dict:
         """Fetch the full survey definition (pages/questions) for a survey."""
         return self._get(f"/surveys/{survey_id}/details")
+
+    def create_survey(self, title: str, category: str | None = None) -> dict:
+        """Create a new draft survey."""
+        payload = {"title": title}
+
+        if category:
+            payload["category"] = category
+
+        return self._post("/surveys", payload=payload)
+
+    def update_page(self, survey_id: str, page_id: str, payload: dict) -> dict:
+        """Update a page on a draft survey."""
+        return self._patch(
+            f"/surveys/{survey_id}/pages/{page_id}",
+            payload=payload,
+        )
+
+    def create_page(self, survey_id: str, payload: dict) -> dict:
+        """Create a page on a draft survey."""
+        return self._post(
+            f"/surveys/{survey_id}/pages",
+            payload=payload,
+        )
+
+    def create_question(self, survey_id: str, page_id: str, payload: dict) -> dict:
+        """Create a question on a draft survey page."""
+        return self._post(
+            f"/surveys/{survey_id}/pages/{page_id}/questions",
+            payload=payload,
+        )
+
+    def delete_survey(self, survey_id: str) -> dict:
+        """Delete a survey."""
+        return self._delete(f"/surveys/{survey_id}")
 
 
     def list_survey_responses_bulk(self, survey_id: str) -> dict:

@@ -33,6 +33,8 @@ class Settings(BaseSettings):
       surveymonkey_base_url: str = "https://api.surveymonkey.com/v3"
       surveymonkey_access_token: str | None = None
 
+      surveymonkey_campaign_template_survey_id: str | None = None
+      surveymonkey_csat_template_survey_id: str | None = None
       surveymonkey_campaign_survey_id: str | None = None
       surveymonkey_campaign_collector_id: str | None = None
       surveymonkey_csat_survey_id: str | None = None
@@ -66,7 +68,29 @@ class Settings(BaseSettings):
       # True = also place them on Zoho tickets (officers will see them).
       helpdesk_draft_execute: bool = False
 
+      # Safety flag: False = record tags/routing decisions in our audit log
+      # only. True = write tags (and any mapped assignment) onto the real
+      # Zoho ticket. Separate from helpdesk_draft_execute — tagging is lower
+      # risk (no candidate-facing content) but still touches live tickets,
+      # so it stays gated until officers are briefed, same as drafts.
+      helpdesk_tag_execute: bool = False
+
+      # Cron expression for how often the pipeline scheduler enqueues
+      # run_helpdesk_pipeline_job. Default: every 5 minutes.
+      helpdesk_pipeline_cron: str = "*/5 * * * *"
+
       zoho_webhook_token: str | None = None
+
+      # Azure AD app registration for reading the Helpdesk KB from SharePoint
+      # (Microsoft Graph, client-credentials flow, Sites.Selected permission).
+      kb_reader_tenant_id: str | None = None
+      kb_reader_client_id: str | None = None
+      # Azure's id for the secret itself — not used for auth, just kept for
+      # reference when it's time to rotate/expire the secret in Azure AD.
+      kb_reader_secret_id: str | None = None
+      kb_reader_secret_value: str | None = None
+      sharepoint_hostname: str = "dragnetnigeria.sharepoint.com"
+      sharepoint_site_path: str = "/sites/candidateexperience"
 
       redis_url: str = "redis://localhost:6379/0"
       rq_default_queue: str = "candidate-experience"

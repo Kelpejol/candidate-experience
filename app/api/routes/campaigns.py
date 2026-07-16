@@ -12,7 +12,7 @@ from fastapi import APIRouter, Depends, Query, HTTPException, UploadFile, File
 
 from app.services.candidate_import_service import parse_candidate_upload
 
-from app.schemas.campaign import CampaignRead, CampaignCreate, CampaignCandidateRead, CampaignCandidateCreate, CampaignCandidateSurveyStatusUpdate, OutboundCallAttemptRead, CampaignSurveySyncResponse, OutboundCallAttemptStatusUpdate, CampaignStatusUpdate, CampaignSummaryRead
+from app.schemas.campaign import CampaignRead, CampaignCreate, CampaignCandidateRead, CampaignCandidateCreate, CampaignCandidateSurveyStatusUpdate, OutboundCallAttemptRead, CampaignSurveySyncResponse, OutboundCallAttemptStatusUpdate, CampaignStatusUpdate, CampaignSummaryRead, CampaignSurveyTemplateCreate, SurveyMonkeyTemplateRead, CampaignSurveyRecipientsPrepare, CampaignSurveyRecipientsPrepareResponse, CampaignSurveyMessageCreate, CampaignSurveyMessageCreateResponse, CampaignSurveyMessageSend, CampaignSurveyMessageSendResponse
 from sqlmodel import Session
 from app.services.campaign_service import (
     create_campaign as create_campaign_service,
@@ -43,6 +43,15 @@ from app.services.job_queue_service import (
 )
 
 from app.services.surveymonkey_sync_service import sync_campaign_survey_responses_for_campaign
+from app.services.surveymonkey_campaign_template_service import (
+    create_campaign_survey_from_template,
+    list_surveymonkey_template_surveys,
+)
+from app.services.surveymonkey_distribution_service import (
+    create_campaign_survey_message,
+    prepare_campaign_survey_recipients,
+    send_campaign_survey_message,
+)
 
 from app.core.database import get_session
 
@@ -70,6 +79,15 @@ def list_campaigns(
 ):
     """List campaigns with pagination."""
     return list_campaigns_service(session, limit, offset=offset)
+
+
+@router.get("/survey/templates", response_model=list[SurveyMonkeyTemplateRead])
+def list_survey_templates():
+    """List SurveyMonkey surveys named as templates (titles starting with TEMPLATE -)."""
+    try:
+        return list_surveymonkey_template_surveys()
+    except RuntimeError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 @router.get("/{campaign_id}", response_model=CampaignRead)
 def get_campaign(
@@ -279,6 +297,116 @@ def sync_campaign_survey_responses(
     try:
         return sync_campaign_survey_responses_for_campaign(
             campaign_id=campaign_id,
+            session=session,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@router.post("/{campaign_id}/survey/create-from-template", response_model=CampaignRead)
+def create_campaign_survey(
+    campaign_id: str,
+    template_request: CampaignSurveyTemplateCreate | None = None,
+    session: Session = Depends(get_session),
+):
+    """Copy the configured SurveyMonkey campaign template and attach it to this campaign."""
+    campaign = get_campaign_by_id(campaign_id, session)
+
+    if not campaign:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+
+    try:
+        return create_campaign_survey_from_template(
+            campaign=campaign,
+            session=session,
+            template_survey_id=template_request.template_survey_id if template_request else None,
+        )
+    except RuntimeError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@router.post(
+    "/{campaign_id}/survey/message",
+    response_model=CampaignSurveyMessageCreateResponse,
+    status_code=201,
+)
+def create_campaign_survey_message_draft(
+    campaign_id: str,
+    message_request: CampaignSurveyMessageCreate,
+    session: Session = Depends(get_session),
+):
+    """Create an unsent SurveyMonkey collector message draft for this campaign."""
+    campaign = get_campaign_by_id(campaign_id, session)
+
+    if not campaign:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+
+    try:
+        return create_campaign_survey_message(
+            campaign=campaign,
+            collector_id=message_request.collector_id,
+            collector_name=message_request.collector_name,
+            subject=message_request.subject,
+            body=message_request.body,
+            session=session,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@router.post(
+    "/{campaign_id}/survey/recipients/prepare",
+    response_model=CampaignSurveyRecipientsPrepareResponse,
+)
+def prepare_campaign_survey_message_recipients(
+    campaign_id: str,
+    recipient_request: CampaignSurveyRecipientsPrepare,
+    session: Session = Depends(get_session),
+):
+    """Add eligible campaign candidates to a SurveyMonkey message without sending emails."""
+    campaign = get_campaign_by_id(campaign_id, session)
+
+    if not campaign:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+
+    try:
+        return prepare_campaign_survey_recipients(
+            campaign=campaign,
+            collector_id=recipient_request.collector_id,
+            message_id=recipient_request.message_id,
+            session=session,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@router.post(
+    "/{campaign_id}/survey/message/send",
+    response_model=CampaignSurveyMessageSendResponse,
+)
+def send_campaign_survey_message_to_prepared_recipients(
+    campaign_id: str,
+    send_request: CampaignSurveyMessageSend,
+    session: Session = Depends(get_session),
+):
+    """Send a prepared SurveyMonkey message after explicit confirmation."""
+    campaign = get_campaign_by_id(campaign_id, session)
+
+    if not campaign:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+
+    try:
+        return send_campaign_survey_message(
+            campaign=campaign,
+            collector_id=send_request.collector_id,
+            message_id=send_request.message_id,
+            confirm_send=send_request.confirm_send,
             session=session,
         )
     except ValueError as exc:

@@ -5,7 +5,9 @@ from sqlmodel import Session
 
 from app.core.config import get_settings
 from app.core.database import get_session
+from app.core.queue import get_default_queue
 from app.integrations.zoho_desk_client import build_zoho_desk_client
+from app.jobs.helpdesk_ai_jobs import process_single_ticket_job
 from app.services.helpdesk_ticket_mirror_service import upsert_ticket_mirror
 
 
@@ -34,4 +36,11 @@ async def zoho_ticket_event(request: Request, session: Session = Depends(get_ses
     mirror = upsert_ticket_mirror(session, ticket)
     session.commit()
 
-    return {"status": "ok", "zoho_ticket_id": mirror.zoho_ticket_id}
+    job = get_default_queue().enqueue(
+        process_single_ticket_job,
+        mirror.zoho_ticket_id,
+        job_timeout=300,
+        result_ttl=3600,
+    )
+
+    return {"status": "ok", "zoho_ticket_id": mirror.zoho_ticket_id, "ai_job_id": job.id}

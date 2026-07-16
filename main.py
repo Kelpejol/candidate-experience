@@ -15,6 +15,7 @@ from app.api.routes.voice_agent_webhooks import router as voice_agent_webhooks_r
 from app.api.routes.campaigns import router as campaign_router
 from app.api.routes.jobs import router as jobs_router
 from app.api.routes.helpdesk_webhooks import router as helpdesk_webhooks_router
+from app.api.routes.helpdesk_reports import router as helpdesk_reports_router
 
 settings = get_settings()
 
@@ -40,3 +41,4 @@ app.include_router(voice_agent_webhooks_router)
 app.include_router(campaign_router)
 app.include_router(jobs_router)
 app.include_router(helpdesk_webhooks_router)
+app.include_router(helpdesk_reports_router)
