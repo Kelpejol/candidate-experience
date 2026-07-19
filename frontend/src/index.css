@@ -1,0 +1,13 @@
+@import "tailwindcss";
+
+/* Scaffold base styles. Tailwind v4 pulls its utilities from the import above;
+   everything else in the app is composed with utility classes. */
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+}

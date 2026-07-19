@@ -95,7 +95,17 @@ class Settings(BaseSettings):
       redis_url: str = "redis://localhost:6379/0"
       rq_default_queue: str = "candidate-experience"
 
+      # Browser origins allowed to call this API (CORS). Comma-separated.
+      # The frontend scaffold's Vite dev server runs on :5173. Add the
+      # deployed UI's origin(s) here in production.
+      cors_allow_origins: str = "http://localhost:5173,http://127.0.0.1:5173"
+
       model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8",)
+
+      @property
+      def cors_allow_origins_list(self) -> list[str]:
+          """Parse the comma-separated CORS origins into a clean list."""
+          return [origin.strip() for origin in self.cors_allow_origins.split(",") if origin.strip()]
 
 
 @lru_cache()
