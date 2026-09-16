@@ -101,10 +101,53 @@ SurveyMonkey scopes currently needed:
 - View Response Details
 - View Webhooks and Create/Modify Webhooks only if we add webhooks.
 
+### CSAT Contact Resolution (phone -> email) — Parked
+
+Status: parked on a main-app integration point, not a technical blocker in
+this service. Everything else in the post-call CSAT loop is built and tested
+(invitation model, eligibility, idempotent creation, batched send, response
+sync with score/comment extraction, gated `CSAT_AUTO_CREATE` auto-trigger on
+the inbound webhook, RQ jobs, manual API). A live test CSAT was sent and
+received (`paul@dragnet-solutions.com`, survey `423246877`,
+collector `440571940`).
+
+The one gap: to send a CSAT after an inbound support call we need the
+candidate's **email**, but an inbound call only reliably gives us their
+**phone**. Today `create_csat_invitation_for_call` resolves phone -> email by
+looking up `CampaignCandidate` (our own outbound-campaign table) as a stand-in
+profile source. That works only when the caller happens to also be in a
+campaign; otherwise the invitation is created as `pending_contact_lookup` and
+never sends.
+
+What unblocks it: a real candidate-profile lookup owned by the main Dragnet
+application (the system that actually knows every candidate's phone + email),
+exposed to this service as either:
+
+- a small internal "resolve contact by phone" API endpoint we call, or
+- a shared/replicated profile table this service can read.
+
+When that exists, swap the body of `_candidate_by_phone` (in
+`app/services/csat_service.py`) to hit it — a one-function change; the rest of
+the CSAT loop (status transitions, send, sync) already handles a resolved
+email vs. `pending_contact_lookup` correctly. No other code changes needed.
+
+Interim: `pending_contact_lookup` invitations can be resolved manually (create
+with an explicit `email=`), which is exactly how the live test was sent.
+
 ### Telephony + ElevenLabs Blocked Items
 
 Status: blocked until the live SIP/telephony path and ElevenLabs phone setup
 are configured.
+
+**Current blocker (2026-09-03): ElevenLabs requires an Enterprise plan for a
+static IP.** 3CX needs a static IP to allowlist for the SIP trunk, and
+ElevenLabs only offers a static IP on its Enterprise tier. This is the one
+thing stopping outbound calls from going live — everything else on our side
+is built and tested (see below). Needs an org decision: upgrade to ElevenLabs
+Enterprise, or find an alternative that gets 3CX a stable IP to allowlist
+without it (e.g. routing through DIDWW instead for the SIP leg, or a
+relay/proxy with a fixed egress IP in front of ElevenLabs). Whoever owns the
+ElevenLabs account/billing relationship should weigh in.
 
 Decision still needed: use 3CX as the SIP endpoint, use DIDWW as the Nigerian
 DID/SIP provider, or use DIDWW for the public Nigerian number while routing
@@ -146,6 +189,36 @@ What is already working:
 - Outbound call attempts and retry queue.
 - Redis/RQ job plumbing.
 - Outbound execution path wired to ElevenLabs batch calls.
+- Scheduled campaign orchestration (built 2026-08-16): a scheduler
+  (`scripts/run_campaign_scheduler.py` + `run_campaign_orchestration_job`)
+  advances every active campaign through its lifecycle on a cron —
+  survey_sent/waiting_for_responses → (wait window) → sync responses →
+  outbound_ready → build call queue → outbound_calling → drain calls (capped by
+  `campaign_outbound_concurrency`, default 1) → completed. The decision logic
+  (`campaign_orchestration_service.decide_campaign_next_step`) reads each
+  campaign's own `response_wait_hours`. Everything up to "queue built" runs
+  today; the `drain_calls` step only places real calls once telephony is live.
+  The campaign summary UI shows an "Automation" line describing the next
+  scheduled step. To activate: run the scheduler alongside the RQ worker.
+- Outbound agent's voice tools, built and tested (2026-08-28 to 2026-09-01):
+  `/voice-agent/kb/query` (Q&A, campaign-scoped), `/voice-agent/outbound/answer`
+  (records each confirmation the candidate gives, idempotent per question),
+  `/voice-agent/outbound/opt-out` (terminal — suppresses the candidate across
+  every campaign, not just the current one). Campaigns now carry the outbound
+  call-context fields the outreach script needs (`call_reason`,
+  `organization_name`, `assessment_at`, `assessment_location`,
+  `practice_test_url`, `contact_info`), settable at creation and editable on
+  the campaign's Outbound tab; they reach the agent as dynamic variables,
+  including a server-computed `time_of_day_greeting` so the opening line is
+  never left to the model's guess.
+- Durability hardening on the outbound path: atomic claim (no double-dial
+  under concurrent workers), a unique DB constraint against duplicate
+  attempts, bounded auto-retry, at-most-once survey/CSAT sends, and the
+  stale-call sweep now runs every orchestration tick.
+- Full ElevenLabs agent configuration handed over (system prompt, first
+  message, all three tools' exact request/response shapes, dynamic variable
+  list, phone-number/webhook notes) — nothing left to design, only to paste
+  into the dashboard once telephony unblocks.
 
 Still blocked:
 
@@ -306,6 +379,68 @@ refresh token exchange we did originally under `tech@`, and swap `.env`.
 No code changes needed. Reads (ticket sync, classification) are unaffected
 either way; this only matters for the write path.
 
+**Update (2026-08-16): write path UNBLOCKED and verified — using janet as an
+interim service identity.** `stella@` had not arrived, so we minted a refresh
+token authorized by **janet.abodunrin@dragnet-solutions.com** (Support
+Administrator) via her own Self Client, and swapped all three `ZOHO_*` values
+in `.env` (client id/secret/refresh token). Verified live against the real
+Zoho Desk:
+
+- `check_zoho_auth.py` confirms the token authenticates as the Dragnet org.
+- A private comment and an unsent draft reply were both created successfully
+  on test ticket #96170 (`add_comment` + `create_draft_reply`), attributed to
+  **Janet Abodunrin**. A Light Agent (`tech@`) would have been 403'd — so the
+  write capability is now proven, not assumed.
+
+**Identity decision — CONFIRMED (2026-08-16): janet's seat is the license we
+will use, and `stella@` is no longer being pursued.** Crucially, janet's Zoho
+account is a *social-media-only* seat — she does not use it to send candidate
+email — so AI writes attributed to "Janet Abodunrin" won't collide with her
+own manual replies (there are none). That removes the main objection to using
+a named account. The only residual caveat is ordinary credential hygiene: if
+janet's password is rotated or the seat is reassigned, re-run the grant-code →
+refresh-token swap and update `.env` (no code changes). This supersedes the
+earlier `stella@` request above.
+
+Remaining before candidate-facing go-live:
+
+1. **`HELPDESK_DRAFT_EXECUTE` is still `false` on purpose.** The end-to-end
+   live draft path is proven, but rollout is gated on the **officer heads-up**
+   — officers have not yet been told AI drafts will start appearing in their
+   reply boxes. When they have, flip `HELPDESK_DRAFT_EXECUTE=true` and restart
+   the worker; that is the only remaining step for drafts. A pre-launch review
+   of the dry-run drafts also caught and fixed a bounce-filter gap (a Gmail
+   mail-daemon NDR was being drafted to — `is_system_bounce_notification` now
+   catches `mailer-daemon`/`postmaster` senders on any domain and more NDR
+   subject phrasings).
+2. **Tag writing fixed (2026-08-16).** Verified against live Zoho that a ticket
+   PATCH with a `tags` field is rejected 422 — the executor now writes tags via
+   the dedicated `POST /tickets/{id}/associateTag` endpoint
+   (`ZohoDeskClient.associate_tags`), with priority/assignee still via PATCH.
+   `HELPDESK_TAG_EXECUTE` was dead before this fix; it is safe to enable now
+   (independently of the draft flag). **It is now `true` in `.env` — tag
+   writes to real Zoho tickets are live in production today.**
+3. **Update (2026-09-15): the classify → draft path re-verified live against
+   a real ticket**, on top of the 2026-08-16 proof, specifically to exercise
+   the new tool-scoped grounding above. New script,
+   `scripts/dry_run_one_ticket.py <zoho_ticket_id>` — runs one real ticket
+   through `process_ticket` and prints the classification/decision/draft;
+   refuses to run at all if `HELPDESK_DRAFT_EXECUTE`/
+   `HELPDESK_WHATSAPP_AUTO_REPLY_EXECUTE` are on, so it can never
+   accidentally send. Ran against ticket `1010551000054684573`
+   (`tool_name=Scholastica`, campaign "JV Renaissance Scholarship"):
+   classification and `tool_name` → `scholastica` scope resolution both
+   correct, grounding came back `grounded`, and the generated draft matched
+   house style (the "Dear [name], We warmly acknowledge receipt of your
+   email." opener, no invented sign-off) without overstating anything the
+   candidate isn't owed (declined to share shortlisting outcomes/timelines,
+   correctly deferring to the client). Point 1 above (officer heads-up) is
+   still the only gate before flipping `HELPDESK_DRAFT_EXECUTE` — this just
+   adds a second, independent real-ticket proof to the first.
+   Note for whoever runs this next: Zoho connectivity from a sandboxed
+   session was intermittent this run (~1-in-3 to 1-in-10 attempts timed out
+   before succeeding) — retry rather than assume it's broken.
+
 ### SharePoint Knowledge Base Connector
 
 Status: Candidate Experience team created the site (2026-07-13):
@@ -318,6 +453,101 @@ What's already built: the KB pipeline (`app/services/helpdesk_kb_service.py`)
 is source-agnostic — `load_kb_chunks()` currently reads local `kb/*.md`
 files, but chunking/embedding/indexing downstream doesn't care where chunks
 come from. Swapping to SharePoint is a new loader function only.
+
+**Update (2026-09-04): the conversion pipeline this needed is now built and
+tested, for the voice/campaign KB.** Real content in SharePoint arrives as
+`.docx` files (not markdown text), so `app/services/docx_kb_loader.py`
+converts one document's bytes into the same heading-per-question markdown
+text the local loader produces — Word's "Heading 1"/"Heading 2" styles map to
+`#`/`##`, exactly the standard already decided above. A heading used as a
+bare section title (no answer under it) is dropped rather than indexed as a
+near-empty junk entry, and reported as a warning naming the file and heading,
+so whoever authored the SharePoint content can go fix it.
+`app/services/sharepoint_kb_loader.py` lists a SharePoint folder's `.docx`
+files via `sharepoint_client`, downloads and converts each one, and skips
+(with a warning) anything that isn't `.docx` or fails to convert — one bad
+file never blocks the rest of the folder. Wired into
+`POST /campaigns/{id}/kb/reindex-from-sharepoint` (separate from the existing
+local-directory `/kb/reindex`, so the caller explicitly picks which source
+`kb_source` means — a local path and a SharePoint folder name can look
+identical as a string).
+
+**Update (2026-09-04): now wired into the Helpdesk KB too, under one unified
+authoring rule for both systems.** The chunking algorithm itself
+(`chunk_markdown`/`heading_of`/`slug`) was pulled into a shared
+`app/services/markdown_kb_chunker.py` so both KBs use the exact same logic,
+not two copies that could drift apart. `helpdesk_kb_service.
+chunks_from_markdown` uses it to turn a converted `.docx` into this KB's
+chunk shape, and `rebuild_kb_index_from_sharepoint(folder_path)` wires
+`sharepoint_kb_loader` → `chunks_from_markdown` → the existing
+`rebuild_kb_index` (now accepts an explicit `chunks` list, defaulting to the
+local folder as before). Run via
+`scripts/sync_helpdesk_kb_from_sharepoint.py "<folder name>"` — Helpdesk's KB
+reindex has always been script-only (no HTTP route), so this matches that
+existing pattern rather than the voice KB's per-campaign endpoint.
+
+**Important: the SharePoint-authoring rule is now identical for both KBs —
+Heading 1 or Heading 2 in Word, either is a real question, no title needed —
+so an officer only ever learns one convention.** This is deliberately
+*different* from each system's own pre-existing LOCAL `.md` file convention,
+which stays untouched: `kb_voice/*.md` already has no title line (matches the
+unified rule already), while `kb/*.md` uses "Heading 1 = document title
+(skipped), Heading 2 = question" — that's internal dev/demo tooling, not
+something officers touch, so changing it wasn't needed or done.
+
+Still blocked on step 3 below (the per-site grant) before any of this can be
+pointed at the real site, for either KB.
+
+**Update (2026-09-09): real KB content reviewed against this standard, and a
+third KB tier added — for the Calling Agent's voice KB specifically, not
+Helpdesk's (the two stay separate by design, per this doc's own principle).**
+The real documents (General Inquiry, Scholastica, FOT FAQ, Test Haven FAQ)
+don't use Heading 1/2 today — they use plain bold-in-"Normal" paragraphs or
+Word's "List Paragraph" style. Rather than build a tolerant multi-format
+parser, the decision was to convert the existing content by hand into the
+Heading-1/2 standard (the person maintaining the content owns the
+conversion), so there's exactly one authoring rule going forward, not several.
+
+This also surfaced that FOT/Test Haven/Scholastica content isn't
+campaign-specific — it applies to every campaign using that tool, and a
+candidate never states which tool they're on (they only mention their
+campaign, e.g. "ExxonMobil"). So the voice KB now has three tiers instead of
+two: general + tool (resolved silently from the campaign's own `tool_name`,
+via `campaign_scope_service.campaign_tool_scope`) + campaign. `"Test Haven"`
+is now a recognized tool name alongside FOT and Scholastica
+(`app/core/vocabulary.py`). Tool-scoped content indexes through the same
+`reindex_campaign` everything else uses, just keyed by the tool's scope tag
+instead of a campaign id — no Campaign row exists for a tool, so this is
+script-triggered (`scripts/reindex_voice_kb_tool.py` for a local directory,
+`scripts/reindex_voice_kb_tool_from_sharepoint.py` for a SharePoint folder),
+not a new HTTP route. Verified end-to-end with a real embedding (indexed a
+sample Test Haven doc, queried it back correctly scoped alongside general
+content, cleaned up after).
+
+**Update (2026-09-15): Helpdesk KB now has the same 3-tier scoping, closing
+the gap noted below.** `helpdesk_kb_service.retrieve_grounding` and
+`rebuild_kb_index` now take `tool_scope`/`campaign_scope` the same way the
+voice KB's `query`/`reindex_campaign` do. The classifier already extracted
+`tool_name`/`campaign_name` from ticket text (`helpdesk_classifier.
+TicketClassification`) — that was sitting unused; `helpdesk_ai_service.
+_resolve_kb_scopes()` now turns it into scope tags (reusing
+`campaign_scope_service.tool_name_to_scope`/`resolve_campaign` as-is,
+no new resolver needed) before every grounding call. New script,
+mirroring the voice one: `scripts/reindex_helpdesk_kb_tool_from_sharepoint.py`.
+
+Caught one real bug while wiring this up: `rebuild_kb_index` used
+`collection.add()`, which silently no-ops on an id that already exists
+(no error, no overwrite) rather than replacing it — harmless once every
+chunk carries a scope tag, but it meant the first re-sync after adding
+scoping left the existing local dev chunks stuck without one, and they
+silently stopped matching any scoped query. Fixed by switching to
+`collection.upsert()`. 474 tests passing (up from 452).
+
+~~Helpdesk's KB has no such tiering yet~~ — resolved above. Original note,
+kept for history: `retrieve_grounding` queried its whole collection with no
+scope filter at all; its own historical taxonomy note further down this doc
+("The KB should be tagged by: tool name...") had already anticipated
+needing this.
 
 Content decision (revised 2026-07-13): do **not** require converting the
 existing FAQ document into an Excel table. As long as each FAQ is its own
@@ -356,6 +586,44 @@ rebuild the whole KB index (same `rebuild_kb_index()` we already have, just
 fed by a different loader). No need for Graph webhooks/change
 notifications; full-rebuild-on-change is simple and already proven with the
 local KB folder.
+
+**Update (2026-09-14): the site itself turned out to be wrong, and the
+library was in a non-default document library — both fixed.** The real site
+is `https://dragnetnigeria.sharepoint.com/sites/everybody`, library
+"Candidate experience KB" — not the `/sites/candidateexperience` placeholder
+this doc's earlier config defaulted to, and `.env` had never actually set
+`SHAREPOINT_SITE_PATH` at all, so every call was silently resolving the
+wrong site. Also, "Candidate experience KB" isn't the site's default
+library — Graph's `/sites/{id}/drive` only ever reaches the default one, so
+a library with its own name needs resolving to a drive id first.
+`SharePointClient.get_drive_id()` added (looks it up via `/sites/{id}/drives`
+by display name); `sharepoint_kb_loader.load_sharepoint_kb_folder()` and both
+`rebuild_kb_index_from_sharepoint` functions take an optional `library_name`
+now. `.env` updated: `SHAREPOINT_SITE_PATH=/sites/everybody`,
+`SHAREPOINT_LIBRARY_NAME=Candidate experience KB`. New test file
+`tests/test_sharepoint_client.py`.
+
+**Update (2026-09-15): step 3 (the per-site Graph grant) is done — access is
+live, verified end-to-end.** `get_site`/`get_drive_id`/`list_drive_items` all
+succeed now. Real folder structure, as actually uploaded (one level deeper
+than first suggested — everything lives under a `KB/` folder):
+
+```text
+KB/General       -> General Inquiry Response Template.docx
+KB/FOT           -> Proctored Test FAQ Response Template (FOT).docx
+KB/Test Haven    -> Proctored Test FAQ Response Template (Test Haven).docx
+KB/Scholastica   -> SCHOLASTICA Inquiry Response Template.docx
+KB/Helpdesk      -> Proctored Test FAQ Response Template (Email Script).docx
+```
+
+All 5 files present, matching what was converted (see the 2026-09-09 update
+above for the conversion details and the two content judgment calls made
+converting "General Inquiry"). Nothing has been indexed from these yet —
+verification so far is read-only (listing the folders); running the actual
+reindex scripts against them is the next step, not yet done. `KB/Helpdesk`'s
+scope is still an open question — its content overlaps heavily with
+`KB/FOT`/`KB/Test Haven` (same technical issues, reworded for an email
+reply) rather than being its own distinct tool or general content.
 
 ## Helpdesk Understanding
 
@@ -449,6 +717,35 @@ WhatsApp is real-time and candidate-facing. It should have two outcomes:
    - When the candidate asks for a person.
 
 No draft step for WhatsApp in the same way as email, because WhatsApp is expected to be conversational. A human can still take over inside Zoho Desk.
+
+**Update (2026-09-09): this logic is now built and tested**, ready for the
+moment real WhatsApp tickets exist. `helpdesk_ai_service.process_ticket`
+branches on `mirror.channel == "WhatsApp"`:
+- **Answer** — reuses the exact same classify/ground/decide pipeline as
+  email (so "out of scope," "sensitive," "uncertain" all route to a human
+  identically to email — no separate rule set to maintain), but a grounded,
+  answerable question is generated in a short, conversational tone
+  (`helpdesk_draft_service.generate_whatsapp_reply`, distinct prompt from
+  the email draft one) and recorded as `action_type: auto_reply` — sent
+  immediately only if `HELPDESK_WHATSAPP_AUTO_REPLY_EXECUTE` is on (off by
+  default, separate flag from the email draft one, more cautious since
+  there's no human-review step to catch a bad answer before it goes out).
+- **Route to human** — same shared backstops as email, PLUS a new
+  WhatsApp-only one: `helpdesk_decision.detect_human_request` scans for the
+  candidate explicitly asking for a person ("speak to a human," "connect me
+  with an agent," etc.) and escalates immediately, before any KB
+  retrieval/generation is attempted.
+- **The "inside the service window / approved template" requirement is NOT
+  implemented** — there's no way to check Meta's 24-hour messaging window
+  from our side without a real WhatsApp connection to test against. Today
+  the assumption is Zoho's own WhatsApp integration enforces or surfaces
+  that constraint; this needs verifying once real WhatsApp tickets exist.
+- **The actual send mechanism is unverified.**
+  `ZohoDeskClient.send_whatsapp_reply` is a best-guess implementation (posts
+  a public comment via `/tickets/{id}/comments`, since Zoho's dedicated
+  email-reply endpoints are hardcoded to `channel: EMAIL` and can't be
+  reused) — confirm this against Zoho's API docs or a live test WhatsApp
+  conversation before ever turning the execute flag on.
 
 ### Email
 
@@ -744,6 +1041,27 @@ AI writes draft
 Officer reviews and sends from Zoho Desk
 ```
 
+**Update (2026-09-09): draft tone corrected against a real officer template.**
+Reviewed the officer-authored `Proctored Test FAQ Response Template (Email
+Script).docx` (140 real reply entries) and found our
+`helpdesk_draft_service.DRAFT_SYSTEM_PROMPT` didn't match house style:
+- Real replies open every answer with "Dear [Candidate/Name]," then, on its
+  own line, "We warmly acknowledge receipt of your email." — our prompt had
+  no such acknowledgment line at all. Added it.
+- Real replies never sign off — checked the whole document for "Best/Kind/
+  Warm regards", "Sincerely", "Candidate Experience Team", "Dragnet
+  Solutions": zero occurrences. Our prompt forced a
+  "Candidate Experience Team / Dragnet Solutions" sign-off. Removed it —
+  drafts now end right after the answer, like the real templates do.
+- Kept personalizing by first name when known (falling back to "Dear
+  Candidate,") rather than matching the real template's inconsistent ~8-of-140
+  "Dear Candidate" usage exactly — that inconsistency reads as the officers'
+  own variance, not a deliberate rule, and personalizing when we can is
+  strictly better.
+
+The WhatsApp draft prompt (`WHATSAPP_SYSTEM_PROMPT`) was already
+short/no-salutation/no-sign-off and needed no change.
+
 ### Step 7: WhatsApp Flow
 
 Goal: support WhatsApp tickets once Meta/WhatsApp setup is approved.
@@ -901,14 +1219,112 @@ Do not start with full WhatsApp automation until:
 
 ## Current Next Move
 
-Since SurveyMonkey is functionally complete for this phase, the remaining
-calling-agent blocker is live telephony. If telephony stays blocked by
-provider/IT setup, the next useful work is:
+Superseded by everything above — this list predates the Zoho connector,
+mirror, draft flow, and webhook endpoint, all of which are now built and
+live-verified. Kept for history; see the dated updates throughout this doc
+for what's actually true as of when each was written.
 
-```text
-Zoho Desk connector
--> ticket mirror
--> email draft-assist flow
--> Zoho webhook ingestion
--> WhatsApp flow after Meta approval
-```
+**Update (2026-09-15) — actual current state:**
+
+Blocked on someone external:
+- SharePoint per-site Graph grant — **done**; content uploaded, not yet
+  indexed (see the SharePoint section above for the real folder layout).
+- Zoho workflow rule (instant webhook vs. the 5-min poll) — no longer
+  blocked on permissions (Janet/Olumide already hold Support Administrator),
+  just needs one of them to click it through in the Zoho UI.
+- Outbound calling — ElevenLabs Enterprise/static IP, owned by the user.
+- WhatsApp/Meta — business verification etc., already in progress.
+- CSAT phone→email lookup — needs a real candidate-lookup API from the main
+  Dragnet app; not buildable from inside this service.
+
+Pending a decision only the user can make:
+- Inbound identity verification (the real call script's "verify 2 data
+  points" step) — the built AI has no stored data to look up in the first
+  place, so whether this still matters is unresolved.
+- Voice cloning — paused on an internal conversation with Dragnet.
+- `HELPDESK_DRAFT_EXECUTE` — one real ticket's draft has now been read and
+  judged good; flip when ready, or dry-run a few more first.
+
+Untested still:
+- WhatsApp send — the mechanism itself is unverified against a real
+  WhatsApp ticket (email's equivalent path now has two real-ticket proofs).
+
+Next concrete step once picked up again: run the actual SharePoint reindex
+scripts against the real, now-accessible content (`scripts/
+reindex_voice_kb_tool_from_sharepoint.py` / `reindex_helpdesk_kb_tool_from_
+sharepoint.py` for FOT/Test Haven/Scholastica, the campaign-admin route /
+`rebuild_kb_index_from_sharepoint` for General) — nothing from the 5
+uploaded docs is indexed into either KB yet.
+
+**Update (2026-09-15): call capacity reviewed for the line manager's 1,000-
+caller scenario; three real changes made off the back of it, not just a
+report.** Full write-up (scenario math, cost, infra findings) in the
+delivered capacity report; summary of what actually changed in the system:
+
+1. **Outbound pacing raised.** `campaign_outbound_concurrency` was `1`
+   (comment literally said "keep at 1 until the telephony path proves it can
+   handle more" — never revisited). Raised to `6`, leaving 4 of our
+   ElevenLabs Creator plan's 10 concurrent-call slots free for real inbound
+   candidates while a campaign runs (that pool is shared, not per-direction
+   — confirmed from ElevenLabs' own docs). `ELEVENLABS_OUTBOUND_CONCURRENCY_
+   LIMIT` in `.env` raised to match.
+2. **Orchestration cadence shortened from every 10 minutes to every 1**
+   (`campaign_orchestration_cron`). With a 2-3 minute average call, the old
+   10-minute tick — not concurrency — was the real throughput ceiling: a
+   slot freed by a finished call sat idle for up to ~9.5 more minutes
+   waiting for the next tick to refill it. This was the single biggest lever
+   found, bigger than the concurrency number itself.
+3. **Inbound call queueing turned on for real**, via the ElevenLabs agent
+   API (`platform_settings.queueing_config`, not `queueing` as ElevenLabs'
+   own changelog copy implies — confirmed by reading the live agent config
+   before patching it). `enabled: true`, 180s wait (default), verified via a
+   follow-up GET after the PATCH. Also discovered while in there: burst
+   pricing (`call_limits.bursting_enabled`) was already `true` on this
+   agent — nobody had explicitly turned that on either; worth knowing it's
+   not a fresh decision.
+4. **`run_simple_worker.py` (RQ `SimpleWorker`, no forking, its own
+   docstring already said "not for production") replaced as the recommended
+   production worker** by new `scripts/run_worker.py` (RQ `Worker`, forks a
+   process per job — a crashing job can't take the whole worker down).
+   `run_simple_worker.py` is kept (unchanged) for local debugging or
+   environments where forking isn't available; README's getting-started and
+   production process list now both point to `run_worker.py`.
+
+475 tests passing after all four changes — none needed a test update, since
+these were config/script changes, not behavior changes to anything under
+test.
+
+**Update (2026-09-15): Friday go-live is full auto-reply, not draft-review —
+new capability built.** The line manager's requirement ("it replies, unknowns
+route to human") is a step beyond anything shipped so far: `create_draft_reply`
+(the flag above) still waits for an officer to click send. Added a new,
+separate, off-by-default setting `helpdesk_email_auto_reply_execute` —
+mirrors `helpdesk_whatsapp_auto_reply_execute`'s shape exactly, and takes
+priority over `helpdesk_draft_execute` if both are ever on at once. When set,
+`process_ticket` calls `ZohoDeskClient.send_reply` (existing method, written
+back in August, never wired in or called against real Zoho until now) instead
+of `create_draft_reply`, and labels the action `auto_reply` same as WhatsApp.
+Ungrounded questions are unaffected — they still escalate to `route_to_human`
+before this branch is ever reached. New test file
+`tests/test_helpdesk_email_auto_reply.py` (6 tests, including a same-shape
+regression guard to WhatsApp's existing cross-channel test). 481 passing.
+
+**Still needed before this can be trusted for real candidate traffic**: a
+real send against a real Zoho test ticket — `send_reply` has never touched
+Zoho's live API, unlike `create_draft_reply`. Also same-day audit found real
+KB gaps against Dragnet's own public Zoho KB portal (`https://dragnetsolutions
+.zohodesk.com/portal/en/kb/dragnet-solutions`) — most flagged topics turned
+out to already be covered (a first pass compared against memory, not the
+actual indexed file, and overclaimed); the three genuine gaps (CELPIP
+registration, JAMB registration number errors, and the real "no rescheduling
+provision" policy — the local demo file promising a reschedule link is
+already dead, superseded by the real SharePoint reindex, so no live
+misinformation risk, just a coverage gap) were added directly to `documents/
+converted/General Inquiry Response Template.docx` and `...SCHOLASTICA
+Inquiry Response Template.docx`, verified through the production loader
+(12→14 and 20→21 questions respectively, zero warnings) — pending re-upload
+to `KB/General` and `KB/Scholastica` on SharePoint and a reindex.
+
+Production host: a separate VM, not this dev machine — deployment there is
+the user's own action item, separate from everything built/tested locally
+this session.

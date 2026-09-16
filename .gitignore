@@ -5,3 +5,16 @@ __pycache__/
 .env
 chroma_data/
 .DS_Store
+
+# Kortex
+.kortex/
+
+# Local SQLite dev database — contains real candidate PII once synced from
+# Zoho/campaigns; must never be committed. Untracked 2026-09-16 after it was
+# found tracked since the first commit.
+candidate_experience.db
+candidate_experience.db-shm
+candidate_experience.db-wal
+
+# Internal working-notes dump, not project content.
+candidate_context.md

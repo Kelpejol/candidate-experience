@@ -1,11 +1,13 @@
+import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 
-import { getHelpdeskSummary } from "../api/helpdesk";
+import { getHelpdeskAIActions, getHelpdeskSummary } from "../api/helpdesk";
+import { Badge } from "../components/ui/Badge";
 import { Card } from "../components/ui/Card";
 import { ErrorState, LoadingState } from "../components/ui/QueryStates";
 import { StatTile } from "../components/ui/StatTile";
-import { humanize } from "../lib/format";
-import type { HelpdeskSummary } from "../lib/types";
+import { formatDateTime, humanize } from "../lib/format";
+import type { HelpdeskAIActionRead, HelpdeskSummary } from "../lib/types";
 
 // Palette (validated via the dataviz skill's validator, light mode):
 // - Action mix = categorical identity (3 hues, fixed order, legend + counts).
@@ -160,6 +162,124 @@ function SectionCard({
   );
 }
 
+// --- Recent AI decisions (the review view) ---------------------------------
+
+type ActionParams = {
+  action_type?: string;
+  only_drafts?: boolean;
+  limit?: number;
+};
+
+const ACTION_TONE: Record<string, "blue" | "green" | "gray"> = {
+  draft_reply: "blue",
+  route_to_human: "green",
+  tag_only: "gray",
+};
+
+const DECISION_FILTERS: { key: string; label: string; params: ActionParams }[] = [
+  { key: "all", label: "All", params: { limit: 100 } },
+  { key: "drafts", label: "Drafts", params: { only_drafts: true, limit: 100 } },
+  { key: "routed", label: "Routed", params: { action_type: "route_to_human", limit: 100 } },
+  { key: "tagged", label: "Tagged", params: { action_type: "tag_only", limit: 100 } },
+];
+
+/** One decision, with an expandable draft. */
+function DecisionRow({ action }: { action: HelpdeskAIActionRead }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <li className="py-3">
+      <div className="flex flex-wrap items-center gap-2">
+        <Badge tone={ACTION_TONE[action.action_type] ?? "gray"}>
+          {humanize(action.action_type)}
+        </Badge>
+        {action.issue_category && (
+          <Badge tone="gray">{humanize(action.issue_category)}</Badge>
+        )}
+        {action.sensitivity_detected && <Badge tone="red">Sensitive</Badge>}
+        {action.grounding_status === "missing" && <Badge tone="amber">KB gap</Badge>}
+        {action.confidence_label && (
+          <span className="text-xs text-slate-500">
+            {humanize(action.confidence_label)} confidence
+          </span>
+        )}
+        <span className="ml-auto text-xs text-slate-400">
+          {formatDateTime(action.created_at)}
+        </span>
+      </div>
+      <p className="mt-1.5 text-sm font-medium text-slate-800">
+        {action.subject || "(no subject)"}
+      </p>
+      <p className="text-xs text-slate-500">
+        {action.channel ? `${action.channel} · ` : ""}
+        {action.candidate_email ?? "unknown sender"}
+      </p>
+      {action.reason && (
+        <p className="mt-1 text-xs italic text-slate-500">{action.reason}</p>
+      )}
+      {action.draft_text && (
+        <div className="mt-2">
+          <button
+            onClick={() => setOpen((v) => !v)}
+            className="text-xs font-medium text-blue-700 hover:underline"
+          >
+            {open ? "Hide draft" : "Show draft"}
+          </button>
+          {open && (
+            <pre className="mt-2 whitespace-pre-wrap rounded-md bg-slate-50 p-3 text-sm text-slate-800">
+              {action.draft_text}
+            </pre>
+          )}
+        </div>
+      )}
+    </li>
+  );
+}
+
+function RecentDecisions() {
+  const [filter, setFilter] = useState("all");
+  const active =
+    DECISION_FILTERS.find((f) => f.key === filter) ?? DECISION_FILTERS[0];
+  const { data, isLoading, isError, error, refetch } = useQuery({
+    queryKey: ["helpdesk-actions", filter],
+    queryFn: () => getHelpdeskAIActions(active.params),
+  });
+
+  return (
+    <SectionCard
+      title="Recent AI decisions"
+      subtitle="What the AI decided on each ticket — and the draft it wrote."
+    >
+      <div className="mb-4 flex flex-wrap gap-2">
+        {DECISION_FILTERS.map((f) => (
+          <button
+            key={f.key}
+            onClick={() => setFilter(f.key)}
+            className={`rounded-full px-3 py-1 text-xs font-medium ${
+              filter === f.key
+                ? "bg-slate-800 text-white"
+                : "bg-slate-100 text-slate-600 hover:bg-slate-200"
+            }`}
+          >
+            {f.label}
+          </button>
+        ))}
+      </div>
+      {isLoading && <LoadingState label="Loading decisions…" />}
+      {isError && <ErrorState error={error} onRetry={() => refetch()} />}
+      {data && data.length === 0 && (
+        <p className="text-sm text-slate-400">No decisions yet.</p>
+      )}
+      {data && data.length > 0 && (
+        <ul className="divide-y divide-slate-100">
+          {data.map((a) => (
+            <DecisionRow key={a.id} action={a} />
+          ))}
+        </ul>
+      )}
+    </SectionCard>
+  );
+}
+
 export function HelpdeskPage() {
   const { data, isLoading, isError, error, refetch } = useQuery({
     queryKey: ["helpdesk-summary"],
@@ -240,6 +360,11 @@ export function HelpdeskPage() {
           </div>
         </div>
       )}
+
+      {/* Per-ticket decisions + drafts — independent of the summary query. */}
+      <div className="mt-6">
+        <RecentDecisions />
+      </div>
     </div>
   );
 }

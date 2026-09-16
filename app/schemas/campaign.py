@@ -13,6 +13,26 @@ from typing import Literal
 
 from app.core.vocabulary import is_tool_allowed
 
+CallReason = Literal["schedule_confirmation", "reminder", "no_show_followup"]
+
+
+def _validate_local_wall_clock(v: datetime | None):
+    """Reject a timezone-aware assessment time.
+
+    `assessment_at` is local wall-clock: the agent reads it back to candidates
+    exactly as entered. The DB column drops tzinfo on write, so an aware value
+    (e.g. "…T09:00:00Z" from a script or integration) would be silently stored
+    as 09:00 and spoken as the wrong local time. Better to reject it than to
+    tell candidates the wrong hour.
+    """
+    if v is not None and v.tzinfo is not None:
+        raise ValueError(
+            "assessment_at must be a local wall-clock time without a timezone "
+            "offset (e.g. 2026-09-02T10:00:00) — it is read back to candidates "
+            "exactly as entered"
+        )
+    return v
+
 
 # Campaign lifecycle: draft -> uploaded -> survey_sending/sent -> waiting_for_responses
 # -> non_response_checking -> outbound_ready -> outbound_calling -> completed/failed.
@@ -70,6 +90,14 @@ class CampaignCreate(BaseModel):
     surveymonkey_collector_id: str | None = None
     response_wait_hours: int = Field(default=24, ge=1, le=336)
 
+    # Outbound call context (fills the outreach script's [brackets]).
+    call_reason: CallReason | None = None
+    organization_name: str | None = None
+    assessment_at: datetime | None = None
+    assessment_location: str | None = None
+    practice_test_url: str | None = None
+    contact_info: str | None = None
+
     @field_validator("name")
     @classmethod
     def name_must_not_be_empty(cls, v: str):
@@ -77,7 +105,7 @@ class CampaignCreate(BaseModel):
         if not v.strip():
             raise ValueError("Campaign name must not be empty")
         return v
-    
+
     @field_validator("tool_name")
     @classmethod
     def tool_name_must_be_allowed(cls, v: str | None):
@@ -85,7 +113,10 @@ class CampaignCreate(BaseModel):
         if v is not None and not is_tool_allowed(v):
             raise ValueError("Unknown tool name")
         return v
-    
+
+    _assessment_at_is_local = field_validator("assessment_at")(
+        _validate_local_wall_clock
+    )
 
 
 class CampaignRead(BaseModel):
@@ -101,6 +132,37 @@ class CampaignRead(BaseModel):
     created_at: datetime
     survey_sent_at: datetime | None = None
     non_responder_checked_at: datetime | None = None
+
+    # Inbound IVR / KB scoping
+    inbound_active: bool = True
+    active_from: datetime | None = None
+    active_until: datetime | None = None
+    kb_source: str | None = None
+    kb_scope: str | None = None
+
+    # Outbound call context
+    call_reason: CallReason | None = None
+    organization_name: str | None = None
+    assessment_at: datetime | None = None
+    assessment_location: str | None = None
+    practice_test_url: str | None = None
+    contact_info: str | None = None
+
+
+class CampaignOutboundUpdate(BaseModel):
+    """Partial update of a campaign's outbound call context. Only the fields
+    provided are changed (model_dump(exclude_unset=True))."""
+
+    call_reason: CallReason | None = None
+    organization_name: str | None = None
+    assessment_at: datetime | None = None
+    assessment_location: str | None = None
+    practice_test_url: str | None = None
+    contact_info: str | None = None
+
+    _assessment_at_is_local = field_validator("assessment_at")(
+        _validate_local_wall_clock
+    )
 
 
 class CampaignStatusUpdate(BaseModel):

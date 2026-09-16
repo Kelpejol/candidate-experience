@@ -4,20 +4,47 @@ from pydantic import BaseModel
 from typing import Literal
 
 from app.core.config import get_settings
+from pydantic import field_validator
+
 from app.core.helpdesk_taxonomy import (
     HELPDESK_TAXONOMY,
+    ISSUE_CATEGORIES,
     SENSITIVE_CATEGORIES,
 )
 from app.core.vocabulary import ALLOWED_TOOLS
 
+# Where an off-taxonomy category lands. Deliberately a SENSITIVE category so an
+# unrecognised label routes to a human instead of falling through to the
+# permissive default action.
+UNKNOWN_CATEGORY_FALLBACK = "complaint"
+
 
 class TicketClassification(BaseModel):
     issue_category: str
-    tool_name: str | None          # "FOT", "Scholastica", or None if unclear
-    campaign_name: str | None      # e.g. "Lafarge Africa Graduate Trainee" if mentioned
+    tool_name: str | None = None   # "FOT", "Scholastica", or None if unclear
+    campaign_name: str | None = None  # e.g. "Lafarge Africa Graduate Trainee"
     sensitivity_detected: bool
     confidence_label: Literal["high", "medium", "low"]
     reason: str                    # one sentence: why this classification
+
+    @field_validator("issue_category", mode="before")
+    @classmethod
+    def coerce_to_taxonomy(cls, v):
+        """Map anything off-taxonomy onto a safe, sensitive category.
+
+        Routing rules match category names EXACTLY, so a hallucinated or
+        miscased label ("Complaint", "results_question", "") would silently
+        skip the sensitive-category gate and become an auto-draft — turning the
+        strictest rule into the most permissive one. Case/spacing slips are
+        normalised; anything still unrecognised is treated as sensitive so a
+        human sees it.
+        """
+        if not isinstance(v, str):
+            return UNKNOWN_CATEGORY_FALLBACK
+        normalized = v.strip().lower().replace(" ", "_").replace("-", "_")
+        if normalized in ISSUE_CATEGORIES:
+            return normalized
+        return UNKNOWN_CATEGORY_FALLBACK
 
 
 def _category_block() -> str:

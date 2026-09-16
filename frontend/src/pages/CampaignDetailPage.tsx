@@ -4,23 +4,35 @@ import { useQuery } from "@tanstack/react-query";
 
 import { getCampaign } from "../api/campaigns";
 import { CampaignCandidatesTab } from "../components/campaigns/CampaignCandidatesTab";
+import { CampaignInboundTab } from "../components/campaigns/CampaignInboundTab";
 import { CampaignOutboundTab } from "../components/campaigns/CampaignOutboundTab";
 import { CampaignSummaryTab } from "../components/campaigns/CampaignSummaryTab";
 import { CampaignSurveyTab } from "../components/campaigns/CampaignSurveyTab";
 import { CampaignStatusBadge } from "../components/ui/Badge";
 import { ErrorState, LoadingState } from "../components/ui/QueryStates";
 
-type TabKey = "summary" | "candidates" | "survey" | "outbound";
+type TabKey = "summary" | "candidates" | "survey" | "outbound" | "inbound";
 
 const TABS: { key: TabKey; label: string }[] = [
   { key: "summary", label: "Summary" },
   { key: "candidates", label: "Candidates" },
   { key: "survey", label: "Survey" },
   { key: "outbound", label: "Outbound" },
+  { key: "inbound", label: "Inbound / IVR" },
 ];
 
 export function CampaignDetailPage() {
   const { campaignId } = useParams<{ campaignId: string }>();
+
+  // Remount the whole page when the campaign changes. React Router reuses this
+  // element across :campaignId changes, and the tabs hold form state seeded
+  // from the campaign they were opened with — without this, navigating from
+  // one campaign to another (history, a bookmark, an edited URL) keeps the old
+  // values on screen and a save would write them onto the NEW campaign.
+  return <CampaignDetail key={campaignId} campaignId={campaignId} />;
+}
+
+function CampaignDetail({ campaignId }: { campaignId?: string }) {
   const [tab, setTab] = useState<TabKey>("summary");
 
   const {
@@ -84,6 +96,7 @@ export function CampaignDetailPage() {
           {tab === "outbound" && (
             <CampaignOutboundTab campaignId={campaign.id} />
           )}
+          {tab === "inbound" && <CampaignInboundTab campaign={campaign} />}
         </>
       )}
     </div>

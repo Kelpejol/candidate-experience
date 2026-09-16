@@ -6,7 +6,7 @@ from pydantic import BaseModel
 from app.core.helpdesk_taxonomy import SENSITIVE_CATEGORIES
 from app.services.helpdesk_classifier import TicketClassification
 
-Action = Literal["draft_reply", "route_to_human", "tag_only"]
+Action = Literal["draft_reply", "auto_reply", "route_to_human", "tag_only"]
 
 # Deterministic sensitivity backstop: word STEMS matched at word boundaries,
 # so "complaint", "complaining", "complained" all hit "complain". Matched on
@@ -23,6 +23,33 @@ _COMPLAINT_PATTERN = re.compile(
     r"\b(" + "|".join(COMPLAINT_STEMS) + r")\w*", re.IGNORECASE
 )
 
+# WhatsApp-only backstop: a candidate explicitly asking for a person must
+# always escalate, even if the question would otherwise be answerable — a
+# conversational channel is exactly where someone says this and expects it
+# to be honored immediately. Plain substrings rather than word-boundary
+# stems (like COMPLAINT_STEMS) because these are multi-word phrases, not
+# single roots.
+HUMAN_REQUEST_PHRASES = (
+    "speak to a human", "speak to someone", "speak with a human",
+    "speak with someone", "speak to a person", "speak with a person",
+    "talk to a human", "talk to someone", "talk to an agent",
+    "talk to a person", "talk to a real person",
+    "real person", "human agent", "human being",
+    "customer service rep", "customer service representative",
+    "connect me to a person", "connect me with a human",
+    "connect me to a human", "get me a human",
+)
+
+
+def detect_human_request(text: str) -> str | None:
+    """Return the matched phrase if the candidate explicitly asked for a
+    person, else None. Case-insensitive plain substring match."""
+    lowered = text.lower()
+    for phrase in HUMAN_REQUEST_PHRASES:
+        if phrase in lowered:
+            return phrase
+    return None
+
 
 class TicketDecision(BaseModel):
     action: Action
@@ -34,20 +61,24 @@ def decide_ticket_action(
     classification: TicketClassification,
     subject: str = "",
     zoho_sentiment: str | None = None,
+    body: str = "",
 ) -> TicketDecision:
     """First matching rule wins — ordered most-restrictive first.
 
     The first two rules are deterministic backstops that do not depend on
-    the LLM at all: complaint/dispute wording in the subject, and Zoho's
-    own sentiment signal. The LLM's judgment applies only below them.
+    the LLM at all: complaint/dispute wording in the subject OR body, and
+    Zoho's own sentiment signal. The LLM's judgment applies only below them.
     """
 
-    match = _COMPLAINT_PATTERN.search(subject)
+    # Scan the body too, not just the subject: candidates routinely file a
+    # neutral subject ("Test page not loading") and escalate in the message
+    # ("I will sue you"). Subject-only scanning let those reach an auto-draft.
+    match = _COMPLAINT_PATTERN.search(f"{subject} {body}")
     if match:
         return TicketDecision(
             action="route_to_human",
             rule="complaint_keyword_backstop",
-            reason=f'Subject contains dispute/complaint wording ("{match.group(0)}").',
+            reason=f'Ticket contains dispute/complaint wording ("{match.group(0)}").',
         )
 
     if (zoho_sentiment or "").upper() == "NEGATIVE":

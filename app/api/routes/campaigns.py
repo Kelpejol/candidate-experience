@@ -11,6 +11,8 @@ Redis job queue.
 from fastapi import APIRouter, Depends, Query, HTTPException, UploadFile, File
 
 from app.services.candidate_import_service import parse_candidate_upload
+from app.schemas.outbound_survey import OutboundSurveyAnswerRead
+from app.services.outbound_survey_service import list_campaign_survey_answers
 
 from app.schemas.campaign import CampaignRead, CampaignCreate, CampaignCandidateRead, CampaignCandidateCreate, CampaignCandidateSurveyStatusUpdate, OutboundCallAttemptRead, CampaignSurveySyncResponse, OutboundCallAttemptStatusUpdate, CampaignStatusUpdate, CampaignSummaryRead, CampaignSurveyTemplateCreate, SurveyMonkeyTemplateRead, CampaignSurveyRecipientsPrepare, CampaignSurveyRecipientsPrepareResponse, CampaignSurveyMessageCreate, CampaignSurveyMessageCreateResponse, CampaignSurveyMessageSend, CampaignSurveyMessageSendResponse
 from sqlmodel import Session
@@ -477,6 +479,25 @@ def list_outbound_attempts(
         limit=limit,
         offset=offset,
     )
+
+
+@router.get(
+    "/{campaign_id}/outbound/answers",
+    response_model=list[OutboundSurveyAnswerRead],
+)
+def list_outbound_survey_answers(
+    campaign_id: str,
+    session: Session = Depends(get_session),
+):
+    """The survey answers collected by voice for a campaign, grouped-ready
+    (each row carries its candidate + attempt id). Raises 404 if the campaign
+    does not exist."""
+    campaign = get_campaign_by_id(campaign_id, session)
+
+    if not campaign:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+
+    return list_campaign_survey_answers(session, campaign_id)
 
 
 @router.get("/{campaign_id}/outbound/attempts/next", response_model=OutboundCallAttemptRead)

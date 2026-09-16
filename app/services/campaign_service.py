@@ -8,6 +8,7 @@ functions here perform direct DB reads/writes via SQLModel; none call
 external services themselves.
 """
 
+from sqlalchemy import or_, update
 from sqlmodel import Session, select
 from datetime import datetime
 from app.models.campaign import Campaign
@@ -51,6 +52,101 @@ def get_latest_outbound_attempt_for_candidate(
 
     return session.exec(statement).first()
 
+def _person_match_filters(email: str | None, phone: str | None) -> list:
+    """Filters identifying the same human across campaigns.
+
+    Only non-empty values are matched — matching NULL to NULL would sweep in
+    every row that happens to lack an email or phone.
+    """
+    filters = []
+    if email:
+        filters.append(CampaignCandidate.email == email)
+    if phone:
+        filters.append(CampaignCandidate.phone == phone)
+    return filters
+
+
+def suppress_person_from_calls(
+    session: Session,
+    *,
+    email: str | None = None,
+    phone: str | None = None,
+) -> int:
+    """Mark this person opted out of calls in EVERY campaign they appear in.
+
+    A candidate is one row per (campaign, person), so an opt-out recorded on a
+    single row would only silence the current campaign — the same human would
+    be called again by the next one. "Don't call me again" has to mean exactly
+    that, so it is applied across all of their rows. Returns the row count.
+
+    Does not commit — the caller owns the transaction.
+    """
+    filters = _person_match_filters(email, phone)
+    if not filters:
+        return 0
+
+    rows = session.exec(
+        select(CampaignCandidate).where(or_(*filters))
+    ).all()
+    for row in rows:
+        row.opted_out_call = True
+        session.add(row)
+    return len(rows)
+
+
+def is_person_opted_out_of_calls(
+    session: Session,
+    *,
+    email: str | None = None,
+    phone: str | None = None,
+) -> bool:
+    """Whether this person has opted out of calls in any campaign.
+
+    Consulted when candidates are added so a re-uploaded spreadsheet can't
+    resurrect someone who already asked not to be called.
+    """
+    filters = _person_match_filters(email, phone)
+    if not filters:
+        return False
+
+    return session.exec(
+        select(CampaignCandidate.id)
+        .where(or_(*filters))
+        .where(CampaignCandidate.opted_out_call.is_(True))
+        .limit(1)
+    ).first() is not None
+
+
+# How many eligible candidates are read per query when building a queue. The
+# builders page through ALL of them — a campaign larger than one page must not
+# be silently truncated, or the candidates past the cutoff are never called.
+ELIGIBLE_PAGE_SIZE = 500
+
+
+def iter_eligible_non_responders(campaign_id: str, session: Session):
+    """Yield every outbound-eligible non-responder for a campaign, a page at a
+    time.
+
+    Offset paging is safe here because the eligibility filter (survey_status,
+    opted_out_call, phone) is not modified while iterating — the queue builders
+    only touch call_status — so the underlying result set is stable.
+    """
+    offset = 0
+    while True:
+        page = list_eligible_non_responders(
+            campaign_id=campaign_id,
+            session=session,
+            limit=ELIGIBLE_PAGE_SIZE,
+            offset=offset,
+        )
+        if not page:
+            return
+        yield from page
+        if len(page) < ELIGIBLE_PAGE_SIZE:
+            return
+        offset += ELIGIBLE_PAGE_SIZE
+
+
 def build_outbound_retry_queue(
     campaign_id: str,
     session: Session,
@@ -69,16 +165,9 @@ def build_outbound_retry_queue(
     Side effects: inserts new OutboundCallAttempt rows, updates candidate
     call_status and campaign status, and commits the session.
     """
-    eligible_candidates = list_eligible_non_responders(
-        campaign_id=campaign_id,
-        session=session,
-        limit=500,
-        offset=0,
-    )
-
     retry_attempts: list[OutboundCallAttempt] = []
 
-    for candidate in eligible_candidates:
+    for candidate in iter_eligible_non_responders(campaign_id, session):
         latest_attempt = get_latest_outbound_attempt_for_candidate(
             campaign_id=campaign_id,
             candidate_id=candidate.id,
@@ -136,7 +225,13 @@ def create_campaign(campaign_data: CampaignCreate, session: Session):
         tool_name=campaign_data.tool_name,
         survey_id=campaign_data.survey_id,
         surveymonkey_collector_id=campaign_data.surveymonkey_collector_id,
-        response_wait_hours=campaign_data.response_wait_hours
+        response_wait_hours=campaign_data.response_wait_hours,
+        call_reason=campaign_data.call_reason,
+        organization_name=campaign_data.organization_name,
+        assessment_at=campaign_data.assessment_at,
+        assessment_location=campaign_data.assessment_location,
+        practice_test_url=campaign_data.practice_test_url,
+        contact_info=campaign_data.contact_info,
     )
 
     session.add(campaign)
@@ -213,15 +308,24 @@ def add_campaign_candidates(
     candidates = []
 
     for candidate_data in candidates_data:
+        email = str(candidate_data.email) if candidate_data.email else None
+
+        # A previous "don't call me again" outranks whatever the upload says —
+        # otherwise re-uploading a spreadsheet next month would resurrect
+        # someone who already opted out.
+        opted_out_call = candidate_data.opted_out_call or is_person_opted_out_of_calls(
+            session, email=email, phone=candidate_data.phone
+        )
+
         candidate = CampaignCandidate(
             campaign_id=campaign_id,
             candidate_name=candidate_data.candidate_name,
-            email=str(candidate_data.email) if candidate_data.email else None,
+            email=email,
             phone=candidate_data.phone,
             tool_name=candidate_data.tool_name,
             campaign_name=candidate_data.campaign_name,
             external_candidate_id=candidate_data.external_candidate_id,
-            opted_out_call=candidate_data.opted_out_call,
+            opted_out_call=opted_out_call,
             opted_out_email=candidate_data.opted_out_email,
         )
 
@@ -405,16 +509,9 @@ def build_outbound_call_queue(
     Side effects: inserts new OutboundCallAttempt rows, updates candidate
     call_status and campaign status, and commits the session.
     """
-    eligible_candidates = list_eligible_non_responders(
-        campaign_id=campaign_id,
-        session=session,
-        limit=500,
-        offset=0,
-    )
-
     attempts: list[OutboundCallAttempt] = []
 
-    for candidate in eligible_candidates:
+    for candidate in iter_eligible_non_responders(campaign_id, session):
         existing_attempt = get_existing_outbound_attempt_for_candidate(
             campaign_id=campaign_id,
             candidate_id=candidate.id,
@@ -623,32 +720,56 @@ def claim_next_queued_outbound_attempt(
     Returns None if there is no queued attempt. Sets the attempt's
     started_at timestamp when claimed.
 
+    Concurrency-safe: the claim is a conditional UPDATE that only succeeds if
+    the row is still "queued", so if two workers race for the same attempt
+    exactly one wins (rowcount==1) and the loser moves on to the next queued
+    attempt — a candidate is never dialed twice. The attempt and its
+    candidate are flipped to "calling" in one transaction.
+
     Side effects: persists the attempt and (if found) candidate status
-    changes to the DB (add/commit/refresh).
+    changes to the DB.
     """
-    attempt = get_next_queued_outbound_attempt(
-        campaign_id=campaign_id,
-        session=session,
-    )
+    while True:
+        attempt = get_next_queued_outbound_attempt(
+            campaign_id=campaign_id,
+            session=session,
+        )
 
-    if not attempt:
-        return None
+        if not attempt:
+            return None
 
-    attempt.status = "calling"
-    attempt.started_at = datetime.utcnow()
-    session.add(attempt)
+        attempt_id = attempt.id
+        candidate_id = attempt.candidate_id
 
-    candidate = get_campaign_candidate_by_id(
-        campaign_id=campaign_id,
-        candidate_id=attempt.candidate_id,
-        session=session,
-    )
+        result = session.execute(
+            update(OutboundCallAttempt)
+            .where(OutboundCallAttempt.id == attempt_id)
+            .where(OutboundCallAttempt.status == "queued")
+            .values(status="calling", started_at=datetime.utcnow())
+            .execution_options(synchronize_session=False)
+        )
 
-    if candidate:
-        candidate.call_status = "calling"
-        session.add(candidate)
+        if result.rowcount != 1:
+            # Another worker claimed this attempt first. Discard our stale view
+            # and try the next queued one.
+            session.rollback()
+            session.expire_all()
+            continue
 
-    session.commit()
-    session.refresh(attempt)
+        candidate = get_campaign_candidate_by_id(
+            campaign_id=campaign_id,
+            candidate_id=candidate_id,
+            session=session,
+        )
 
-    return attempt
+        if candidate:
+            candidate.call_status = "calling"
+            session.add(candidate)
+
+        session.commit()
+
+        # The Core UPDATE bypassed the ORM object, so reload it before returning.
+        session.expire(attempt)
+        session.refresh(attempt)
+
+        return attempt

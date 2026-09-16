@@ -10,7 +10,11 @@ from app.core.config import get_settings
 from app.core.database import engine
 from app.integrations.zoho_desk_client import build_zoho_desk_client
 from app.models.helpdesk_ticket_mirror import HelpdeskTicketMirror
-from app.services.helpdesk_ai_service import process_pending_tickets, process_ticket
+from app.services.helpdesk_ai_service import (
+    _latest_action_time,
+    process_pending_tickets,
+    process_ticket,
+)
 from app.services.helpdesk_ticket_mirror_service import sync_ticket_mirror_from_zoho
 
 
@@ -30,6 +34,19 @@ def process_single_ticket_job(zoho_ticket_id: str) -> dict:
         ).first()
         if mirror is None:
             return {"status": "skipped", "reason": "ticket not in mirror yet"}
+
+        # Idempotency: Zoho retries webhooks, so the same event can arrive more
+        # than once. Compare against Zoho's OWN modification time, not our
+        # last_synced_at — the webhook handler re-upserts the mirror (restamping
+        # last_synced_at) before enqueueing this job, so a last_synced_at
+        # comparison always looks "fresh" and lets a duplicate delivery place a
+        # second AI draft on the live ticket.
+        last_action_at = _latest_action_time(session, zoho_ticket_id)
+        changed_at = mirror.zoho_modified_at
+        if last_action_at is not None and (
+            changed_at is None or last_action_at >= changed_at
+        ):
+            return {"status": "skipped", "reason": "already processed this version"}
 
         action = process_ticket(session, zoho_client, mirror)
         session.commit()

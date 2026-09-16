@@ -34,6 +34,43 @@ function Breakdown({ title, data }: { title: string; data: Record<string, number
   );
 }
 
+/** Plain-language "what the scheduler will do next" for the current status.
+ * Mirrors the backend orchestration lifecycle so an operator can see the
+ * campaign self-drives (no manual step-by-step) and what's coming next. */
+function orchestrationHint(campaign: CampaignRead): string | null {
+  const { status, survey_sent_at, response_wait_hours } = campaign;
+  switch (status) {
+    case "draft":
+    case "uploaded":
+      return "Automation starts once the survey is sent.";
+    case "survey_sending":
+      return "Survey send in progress…";
+    case "survey_sent":
+    case "waiting_for_responses": {
+      const base = `Waiting for responses. Non-responders are checked automatically after the ${response_wait_hours} h window`;
+      if (survey_sent_at) {
+        const eligibleAt = new Date(
+          new Date(survey_sent_at).getTime() + response_wait_hours * 3600_000,
+        );
+        return `${base} (around ${formatDateTime(eligibleAt.toISOString())}).`;
+      }
+      return `${base}.`;
+    }
+    case "non_response_checking":
+      return "Checking who hasn't responded…";
+    case "outbound_ready":
+      return "Non-responders identified — the call queue builds automatically on the next cycle.";
+    case "outbound_calling":
+      return "Calling non-responders automatically, a few per cycle, until the queue is drained.";
+    case "completed":
+      return "Completed — nothing left for the system to do.";
+    case "failed":
+      return "Marked failed — the scheduler won't advance this campaign.";
+    default:
+      return null;
+  }
+}
+
 /** A label→value row in the campaign meta grid. */
 function Meta({ label, value }: { label: string; value: React.ReactNode }) {
   return (
@@ -65,8 +102,20 @@ export function CampaignSummaryTab({ campaign }: { campaign: CampaignRead }) {
     },
   });
 
+  const hint = orchestrationHint(campaign);
+
   return (
     <div className="space-y-6">
+      {/* What the scheduler will do next, automatically. */}
+      {hint && (
+        <div className="flex items-start gap-2 rounded-md border border-blue-100 bg-blue-50 px-4 py-3 text-sm text-blue-800">
+          <span aria-hidden className="mt-0.5">⚙️</span>
+          <p>
+            <span className="font-medium">Automation:</span> {hint}
+          </p>
+        </div>
+      )}
+
       {/* Meta + status control */}
       <Card className="p-5">
         <dl className="grid grid-cols-2 gap-x-6 gap-y-4 sm:grid-cols-3">

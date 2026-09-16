@@ -8,7 +8,10 @@ job in a separate process/thread from whatever enqueued it.
 from sqlmodel import Session
 
 from app.core.database import engine
-from app.services.outbound_call_execution_service import execute_next_outbound_call_for_campaign
+from app.services.outbound_call_execution_service import (
+    execute_next_outbound_call_for_campaign,
+    sweep_stale_outbound_attempts,
+)
 
 
 def execute_next_outbound_call_job(campaign_id: str) -> dict:
@@ -23,4 +26,17 @@ def execute_next_outbound_call_job(campaign_id: str) -> dict:
         return execute_next_outbound_call_for_campaign(
             campaign_id=campaign_id,
             session=session,
+        )
+
+
+def sweep_stale_outbound_attempts_job(older_than_minutes: int = 15) -> dict:
+    """Mark outbound attempts stuck in 'calling' past the window as no_answer.
+
+    Fallback for calls that never connected (ElevenLabs only webhooks
+    connected calls). Schedule this periodically alongside the pipeline.
+    """
+    with Session(engine) as session:
+        return sweep_stale_outbound_attempts(
+            session=session,
+            older_than_minutes=older_than_minutes,
         )

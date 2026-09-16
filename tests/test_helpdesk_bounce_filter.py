@@ -26,3 +26,25 @@ def test_real_candidate_is_not_a_bounce():
 def test_case_insensitive_domain_match():
     mirror = make_mirror(email="Postmaster@Dragnet-Solutions.COM")
     assert is_system_bounce_notification(mirror) is True
+
+
+def test_mailer_daemon_from_any_domain_is_a_bounce():
+    # The real miss caught in the pre-launch draft review: a Gmail NDR whose
+    # sender is a mail daemon on a foreign domain (not ours) and whose subject
+    # doesn't start with the old prefixes.
+    mirror = make_mirror(
+        email="mailer-daemon@googlemail.com",
+        subject="Delivery Status Notification (Failure)",
+    )
+    assert is_system_bounce_notification(mirror) is True
+
+
+def test_postmaster_any_domain_is_a_bounce():
+    mirror = make_mirror(email="postmaster@outlook.com", subject="Returned mail")
+    assert is_system_bounce_notification(mirror) is True
+
+
+def test_delivery_status_notification_subject_is_a_bounce():
+    mirror = make_mirror(email="someone@yahoo.com",
+                         subject="Delivery Status Notification (Failure)")
+    assert is_system_bounce_notification(mirror) is True

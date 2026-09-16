@@ -12,7 +12,10 @@ import type {
   CampaignCandidateRead,
   CampaignCandidateSurveyStatusUpdate,
   CampaignCreate,
+  CampaignInboundUpdate,
+  CampaignOutboundUpdate,
   CampaignRead,
+  CampaignReindexResponse,
   CampaignStatusUpdate,
   CampaignSummaryRead,
   CampaignSurveyMessageCreate,
@@ -26,6 +29,7 @@ import type {
   JobQueuedRead,
   OutboundCallAttemptRead,
   OutboundCallAttemptStatusUpdate,
+  OutboundSurveyAnswerRead,
   SurveyMonkeyTemplateRead,
 } from "../lib/types";
 
@@ -52,6 +56,34 @@ export function updateCampaignStatus(
 
 export function getCampaignSummary(campaignId: string) {
   return api.get<CampaignSummaryRead>(`/campaigns/${campaignId}/summary`);
+}
+
+// --- Inbound IVR / KB scoping ---------------------------------------------
+
+/** Update a campaign's inbound settings. Only the fields you pass are changed. */
+export function updateCampaignInbound(
+  campaignId: string,
+  body: CampaignInboundUpdate,
+) {
+  return api.patch<CampaignRead>(`/campaigns/${campaignId}/inbound`, body);
+}
+
+/** Update a campaign's outbound call context. Only the fields you pass change. */
+export function updateCampaignOutboundSettings(
+  campaignId: string,
+  body: CampaignOutboundUpdate,
+) {
+  return api.patch<CampaignRead>(
+    `/campaigns/${campaignId}/outbound-settings`,
+    body,
+  );
+}
+
+/** (Re-)index this campaign's KB from its configured kb_source. */
+export function reindexCampaignKb(campaignId: string) {
+  return api.post<CampaignReindexResponse>(
+    `/campaigns/${campaignId}/kb/reindex`,
+  );
 }
 
 /** SurveyMonkey surveys usable as templates (titles prefixed `TEMPLATE -`). */
@@ -183,6 +215,13 @@ export function listOutboundAttempts(
 ) {
   return api.get<OutboundCallAttemptRead[]>(
     `/campaigns/${campaignId}/outbound/attempts${buildQuery({ limit, offset })}`,
+  );
+}
+
+/** Survey answers collected by voice, one row per question per candidate. */
+export function listOutboundAnswers(campaignId: string) {
+  return api.get<OutboundSurveyAnswerRead[]>(
+    `/campaigns/${campaignId}/outbound/answers`,
   );
 }
 

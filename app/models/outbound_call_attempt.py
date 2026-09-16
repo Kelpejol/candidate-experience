@@ -5,7 +5,7 @@ ElevenLabs outbound call placed to a non-responding campaign candidate.
 from datetime import datetime
 from uuid import uuid4
 
-from sqlmodel import Field, SQLModel
+from sqlmodel import Field, SQLModel, UniqueConstraint
 
 
 class OutboundCallAttempt(SQLModel, table=True):
@@ -18,6 +18,18 @@ class OutboundCallAttempt(SQLModel, table=True):
     ElevenLabs conversation id, transcript, and disposition once the call
     completes.
     """
+
+    # Hard guarantee against duplicate attempts: even if two queue builds race
+    # (overlapping orchestration ticks), the DB rejects a second row for the
+    # same candidate + attempt number in a campaign.
+    __table_args__ = (
+        UniqueConstraint(
+            "campaign_id",
+            "candidate_id",
+            "attempt_number",
+            name="uq_outbound_attempt_campaign_candidate_number",
+        ),
+    )
 
     id: str = Field(default_factory=lambda: str(uuid4()), primary_key=True)
 

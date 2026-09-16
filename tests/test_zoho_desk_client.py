@@ -169,6 +169,32 @@ def test_create_draft_reply_posts_email_draft(monkeypatch):
     assert captured["json"]["to"] == "candidate@example.com"
 
 
+def test_send_whatsapp_reply_posts_a_public_comment(monkeypatch):
+    """Unverified against a real WhatsApp ticket (see the method's own
+    docstring) — this test only pins down what OUR client currently sends,
+    not that Zoho actually delivers it to the candidate over WhatsApp."""
+    captured = {}
+
+    def fake_request(method, url, headers=None, params=None, json=None, timeout=None):
+        captured.update({"method": method, "url": url, "json": json})
+        return FakeResponse(payload={"id": "comment_1"})
+
+    monkeypatch.setattr(zoho_desk_module.requests, "request", fake_request)
+
+    client = ZohoDeskClient(
+        base_url="https://desk.zoho.com/api/v1",
+        token_provider=FakeTokenProvider(),
+        org_id="org_1",
+    )
+
+    client.send_whatsapp_reply(ticket_id="ticket_1", content="Hi, try a different browser.")
+
+    assert captured["method"] == "POST"
+    assert captured["url"] == "https://desk.zoho.com/api/v1/tickets/ticket_1/comments"
+    assert captured["json"]["isPublic"] is True
+    assert captured["json"]["content"] == "Hi, try a different browser."
+
+
 class FakeSettings:
     zoho_accounts_base_url = "https://accounts.zoho.com"
     zoho_desk_base_url = "https://desk.zoho.com/api/v1"

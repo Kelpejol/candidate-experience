@@ -16,6 +16,60 @@ from collections import Counter
 from sqlmodel import Session, select
 
 from app.models.helpdesk_ai_action import HelpdeskAIAction
+from app.models.helpdesk_ticket_mirror import HelpdeskTicketMirror
+
+
+def list_recent_ai_actions(
+    session: Session,
+    action_type: str | None = None,
+    only_drafts: bool = False,
+    limit: int = 50,
+) -> list[dict]:
+    """Recent AI decisions for the review UI, newest first.
+
+    Each row is the AI action enriched with the ticket's subject / candidate
+    email / channel from the mirror, so a reviewer can read what the AI
+    decided (and the draft it wrote) without cross-referencing Zoho. Optional
+    filters: a specific action_type, or only rows that produced a draft.
+    """
+    statement = select(HelpdeskAIAction).order_by(HelpdeskAIAction.created_at.desc())
+    if action_type:
+        statement = statement.where(HelpdeskAIAction.action_type == action_type)
+    if only_drafts:
+        statement = statement.where(HelpdeskAIAction.draft_text.is_not(None))
+    actions = session.exec(statement.limit(limit)).all()
+
+    ticket_ids = {a.zoho_ticket_id for a in actions}
+    mirrors: dict[str, HelpdeskTicketMirror] = {}
+    if ticket_ids:
+        for mirror in session.exec(
+            select(HelpdeskTicketMirror).where(
+                HelpdeskTicketMirror.zoho_ticket_id.in_(ticket_ids)
+            )
+        ).all():
+            mirrors[mirror.zoho_ticket_id] = mirror
+
+    rows: list[dict] = []
+    for action in actions:
+        mirror = mirrors.get(action.zoho_ticket_id)
+        rows.append({
+            "id": action.id,
+            "zoho_ticket_id": action.zoho_ticket_id,
+            "subject": mirror.subject if mirror else None,
+            "candidate_email": mirror.candidate_email if mirror else None,
+            "channel": mirror.channel if mirror else None,
+            "action_type": action.action_type,
+            "rule": action.rule,
+            "issue_category": action.issue_category,
+            "confidence_label": action.confidence_label,
+            "sensitivity_detected": action.sensitivity_detected,
+            "grounding_status": action.grounding_status,
+            "draft_text": action.draft_text,
+            "reason": action.reason,
+            "executed": action.executed,
+            "created_at": action.created_at,
+        })
+    return rows
 
 
 def _latest_action_per_ticket(session: Session) -> list[HelpdeskAIAction]:

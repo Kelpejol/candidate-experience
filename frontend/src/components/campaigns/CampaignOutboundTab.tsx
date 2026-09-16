@@ -6,9 +6,11 @@ import {
   buildOutboundRetryQueue,
   enqueueExecuteNextOutboundJob,
   getNextOutboundAttempt,
+  listOutboundAnswers,
   listOutboundAttempts,
   updateOutboundAttemptStatus,
 } from "../../api/campaigns";
+import { CampaignOutboundSettingsCard } from "./CampaignOutboundSettingsCard";
 import { useJob } from "../../hooks/useJob";
 import { ApiError } from "../../lib/apiClient";
 import { formatDateTime, humanize } from "../../lib/format";
@@ -16,10 +18,12 @@ import { OUTBOUND_ATTEMPT_STATUSES } from "../../lib/types";
 import type {
   OutboundCallAttemptRead,
   OutboundCallAttemptStatus,
+  OutboundSurveyAnswerRead,
 } from "../../lib/types";
 import { AttemptStatusBadge } from "../ui/Badge";
 import { Button } from "../ui/Button";
 import { Card } from "../ui/Card";
+import { Modal } from "../ui/Modal";
 import { EmptyState, ErrorState, LoadingState } from "../ui/QueryStates";
 import { Spinner } from "../ui/Spinner";
 
@@ -30,11 +34,15 @@ export function CampaignOutboundTab({ campaignId }: { campaignId: string }) {
   const [offset, setOffset] = useState(0);
   const [maxAttempts, setMaxAttempts] = useState(3);
   const [executeJobId, setExecuteJobId] = useState<string | null>(null);
+  const [confirmCallOpen, setConfirmCallOpen] = useState(false);
 
   function invalidateAll() {
     queryClient.invalidateQueries({ queryKey: ["outbound-attempts", campaignId] });
     queryClient.invalidateQueries({ queryKey: ["outbound-next", campaignId] });
     queryClient.invalidateQueries({ queryKey: ["campaign-summary", campaignId] });
+    // The collected answers change as calls complete — without this the
+    // responses panel keeps showing "no responses yet" after a finished call.
+    queryClient.invalidateQueries({ queryKey: ["outbound-answers", campaignId] });
   }
 
   const attempts = useQuery({
@@ -77,6 +85,9 @@ export function CampaignOutboundTab({ campaignId }: { campaignId: string }) {
 
   return (
     <div className="space-y-4">
+      {/* Call context — what the agent says (editable) */}
+      <CampaignOutboundSettingsCard campaignId={campaignId} />
+
       {/* Actions */}
       <Card className="flex flex-wrap items-end gap-4 p-5">
         <Button
@@ -94,7 +105,14 @@ export function CampaignOutboundTab({ campaignId }: { campaignId: string }) {
               min={1}
               max={10}
               value={maxAttempts}
-              onChange={(e) => setMaxAttempts(Number(e.target.value))}
+              // Clamp here: this input isn't in a <form>, so the browser never
+              // enforces min/max, and an empty box (Number("") === 0) would be
+              // sent as max_attempts=0 and rejected by the API with a raw 422.
+              onChange={(e) =>
+                setMaxAttempts(
+                  Math.min(10, Math.max(1, Number(e.target.value) || 1)),
+                )
+              }
               className="w-20 rounded-md border border-slate-300 px-2 py-1.5 text-sm"
             />
           </label>
@@ -109,8 +127,8 @@ export function CampaignOutboundTab({ campaignId }: { campaignId: string }) {
 
         <div className="ml-auto">
           <Button
-            onClick={() => executeNext.mutate()}
-            disabled={executeNext.isPending || job.isPolling}
+            onClick={() => setConfirmCallOpen(true)}
+            disabled={executeNext.isPending || job.isPolling || noneQueued}
           >
             {executeNext.isPending || job.isPolling ? (
               <Spinner />
@@ -120,6 +138,41 @@ export function CampaignOutboundTab({ campaignId }: { campaignId: string }) {
           </Button>
         </div>
       </Card>
+
+      {/* Placing a real call is irreversible — name who gets dialled. */}
+      <Modal
+        open={confirmCallOpen}
+        onClose={() => setConfirmCallOpen(false)}
+        title="Place this call?"
+      >
+        <p className="text-sm text-slate-600">
+          This dials{" "}
+          <span className="font-medium text-slate-900">
+            {nextQueued.data?.candidate_name ?? "the next queued candidate"}
+          </span>{" "}
+          on{" "}
+          <span className="font-medium text-slate-900">
+            {nextQueued.data?.phone ?? "their number"}
+          </span>{" "}
+          right now (attempt {nextQueued.data?.attempt_number ?? "?"}). A real
+          phone call cannot be undone.
+        </p>
+        <div className="mt-5 flex justify-end gap-2">
+          <Button variant="secondary" onClick={() => setConfirmCallOpen(false)}>
+            Cancel
+          </Button>
+          <Button
+            variant="danger"
+            onClick={() => {
+              setConfirmCallOpen(false);
+              executeNext.mutate();
+            }}
+            disabled={executeNext.isPending}
+          >
+            Yes, place the call
+          </Button>
+        </div>
+      </Modal>
 
       {(buildQueue.isError || retryQueue.isError || executeNext.isError) && (
         <ErrorState
@@ -134,6 +187,11 @@ export function CampaignOutboundTab({ campaignId }: { campaignId: string }) {
           "…"
         ) : noneQueued ? (
           <span className="text-slate-400">none queued</span>
+        ) : nextQueued.isError ? (
+          // A backend/network failure must not read as "queue is empty".
+          <span className="text-red-600">
+            couldn’t load — {(nextQueued.error as Error).message}
+          </span>
         ) : nextQueued.data ? (
           <span className="font-medium text-slate-800">
             {nextQueued.data.candidate_name ?? nextQueued.data.phone} (attempt{" "}
@@ -152,6 +210,12 @@ export function CampaignOutboundTab({ campaignId }: { campaignId: string }) {
             {job.isPolling && <Spinner className="ml-2 text-slate-400" />}
             {job.isFailed && (
               <span className="ml-2 text-red-600">{job.data?.error}</span>
+            )}
+            {job.isError && (
+              // The poll itself failed (e.g. the job result expired).
+              <span className="ml-2 text-red-600">
+                lost track of this job — {(job.error as Error).message}
+              </span>
             )}
           </div>
         )}
@@ -213,6 +277,9 @@ export function CampaignOutboundTab({ campaignId }: { campaignId: string }) {
           </table>
         </Card>
       )}
+
+      {/* Survey responses collected by voice */}
+      <OutboundResponses campaignId={campaignId} />
 
       {(canPrev || canNext) && (
         <div className="flex items-center justify-between text-sm text-slate-500">
@@ -280,6 +347,80 @@ function AttemptStatusEditor({
         ))}
       </select>
       {mutation.isPending && <Spinner className="text-slate-400" />}
+    </div>
+  );
+}
+
+/**
+ * The survey answers collected by voice on outbound calls, grouped per
+ * candidate (question -> answer). This is the payoff of the outbound survey
+ * agent — the feedback it gathered from non-responders.
+ */
+function OutboundResponses({ campaignId }: { campaignId: string }) {
+  const answers = useQuery({
+    queryKey: ["outbound-answers", campaignId],
+    queryFn: () => listOutboundAnswers(campaignId),
+  });
+
+  if (answers.isLoading) return <LoadingState label="Loading responses…" />;
+  if (answers.isError)
+    return (
+      <ErrorState error={answers.error} onRetry={() => answers.refetch()} />
+    );
+
+  const rows = answers.data ?? [];
+  if (rows.length === 0) {
+    return (
+      <EmptyState
+        title="No survey responses yet"
+        description="Answers candidates give on outbound calls will appear here."
+      />
+    );
+  }
+
+  // Group by candidate, preserving first-seen order; order each group's
+  // answers by question position.
+  const groups = new Map<
+    string,
+    { name: string; items: OutboundSurveyAnswerRead[] }
+  >();
+  for (const a of rows) {
+    if (!groups.has(a.candidate_id))
+      groups.set(a.candidate_id, {
+        name: a.candidate_name ?? "Unknown candidate",
+        items: [],
+      });
+    groups.get(a.candidate_id)!.items.push(a);
+  }
+  for (const g of groups.values())
+    g.items.sort((x, y) => (x.position ?? 0) - (y.position ?? 0));
+
+  return (
+    <div className="space-y-3">
+      <h3 className="text-sm font-semibold text-slate-900">
+        Survey responses{" "}
+        <span className="font-normal text-slate-400">({groups.size})</span>
+      </h3>
+      {[...groups.entries()].map(([candidateId, g]) => (
+        <Card key={candidateId} className="p-4">
+          <p className="mb-3 text-sm font-medium text-slate-900">{g.name}</p>
+          <dl className="space-y-2">
+            {g.items.map((a) => (
+              <div
+                key={a.id}
+                className="grid grid-cols-1 gap-0.5 sm:grid-cols-3 sm:gap-3"
+              >
+                <dt className="text-sm text-slate-500 sm:col-span-2">
+                  {a.question}
+                </dt>
+                <dd className="text-sm font-medium text-slate-900">
+                  {a.answer}
+                </dd>
+              </div>
+            ))}
+          </dl>
+        </Card>
+      ))}
     </div>
   );
 }

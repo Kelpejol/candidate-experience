@@ -41,8 +41,21 @@ except Exception as exc:
         print("  -> Sites.Selected permission may not have admin consent yet.")
     raise SystemExit(1)
 
-print("Step 3: listing files in the default document library...")
-items = client.list_drive_items(site_id).get("value", [])
+drive_id = None
+if settings.sharepoint_library_name:
+    print(f"Step 3: resolving library {settings.sharepoint_library_name!r} on this site...")
+    try:
+        drive_id = client.get_drive_id(site_id, settings.sharepoint_library_name)
+        print(f"  OK — drive id: {drive_id}\n")
+    except RuntimeError as exc:
+        print(f"  FAILED: {exc}")
+        raise SystemExit(1)
+    step = "4"
+else:
+    step = "3"
+
+print(f"Step {step}: listing files in the {'named' if drive_id else 'default'} document library...")
+items = client.list_drive_items(site_id, drive_id=drive_id).get("value", [])
 for item in items:
     kind = "folder" if "folder" in item else "file"
     print(f"  [{kind}] {item.get('name')}  (id={item.get('id')})")

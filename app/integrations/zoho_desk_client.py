@@ -183,9 +183,38 @@ class ZohoDeskClient:
             },
         )
 
+    def send_whatsapp_reply(self, ticket_id: str, content: str) -> dict:
+        """Send a reply on a WhatsApp-channel ticket.
+
+        UNVERIFIED against live Zoho behavior. create_draft_reply/send_reply
+        are hardcoded to "channel": "EMAIL" — Zoho's email-reply endpoints
+        cannot be reused for WhatsApp. The best-guess mechanism, based on
+        Zoho Desk's comment-based reply model, is that a PUBLIC comment on a
+        WhatsApp-channel ticket is what Zoho's own WhatsApp connector
+        forwards to the candidate. This has not been confirmed against a
+        real WhatsApp ticket (blocked on the Meta/WABA connection landing) —
+        verify against Zoho's API docs or a live test conversation before
+        ever enabling settings.helpdesk_whatsapp_auto_reply_execute.
+        """
+        return self.add_comment(ticket_id, content, is_public=True)
+
     def update_ticket(self, ticket_id: str, fields: dict) -> dict:
-        """Patch fields on a ticket (status, custom fields, etc.)."""
+        """Patch fields on a ticket (status, priority, assigneeId, custom fields).
+
+        Note: `tags` are NOT a valid field here — a PATCH with `tags` is
+        rejected 422. Use `associate_tags` for tags.
+        """
         return self._request("PATCH", f"/tickets/{ticket_id}", json=fields)
+
+    def associate_tags(self, ticket_id: str, tags: list[str]) -> dict:
+        """Add tags to a ticket via Zoho Desk's dedicated tag endpoint.
+
+        Tags in Zoho Desk are their own objects, not a ticket field — they
+        must be attached through /associateTag, not a ticket PATCH.
+        """
+        return self._request(
+            "POST", f"/tickets/{ticket_id}/associateTag", json={"tags": tags}
+        )
 
 
 def build_zoho_desk_client(settings) -> ZohoDeskClient:

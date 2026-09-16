@@ -1,0 +1,10 @@
+# Optional — only needed to run the KB quality eval (scripts/eval_voice_kb.py).
+# Deliberately kept OUT of requirements.txt: this is a dev/quality tool, not a
+# production dependency, and it pulls in a heavy transitive tree (openai SDK
+# included, used only as deepeval's internal plumbing — the eval itself is
+# wired to route all real inference through OUR gateway, never OpenAI's API;
+# see evals/gateway_model.py).
+#
+# Install with: pip install -r requirements-eval.txt
+
+deepeval==4.2.0

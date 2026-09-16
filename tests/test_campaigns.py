@@ -1881,7 +1881,7 @@ def test_execute_next_outbound_call_for_campaign_claims_attempt_and_calls_provid
     build_response = client.post(f"/campaigns/{campaign_id}/outbound/build-queue")
     attempt_id = build_response.json()[0]["id"]
 
-    def fake_create_outbound_call_for_attempt(attempt):
+    def fake_create_outbound_call_for_attempt(attempt, campaign=None):
         # By the time the provider is invoked, the service should already
         # have claimed the attempt (status flipped to "calling").
         assert attempt.id == attempt_id

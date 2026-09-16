@@ -155,3 +155,50 @@ def test_elevenlabs_webhook_is_idempotent(client, monkeypatch):
     assert first_response.json()["stored"] is True
     assert second_response.json()["stored"] is False
     assert second_response.json()["message"] == "Call record already exists"
+
+
+def _inbound_transcription_payload(conversation_id):
+    return {
+        "type": "post_call_transcription",
+        "data": {
+            "conversation_id": conversation_id,
+            "metadata": {
+                "features_usage": {"transfer_to_number": {"used": False}},
+            },
+            "analysis": {"transcript_summary": "Candidate asked about FOT exam."},
+            "transcript": [],
+        },
+    }
+
+
+def test_elevenlabs_webhook_auto_creates_csat_when_flag_on(client, monkeypatch):
+    monkeypatch.setenv("ELEVENLABS_WEBHOOK_SECRET", "test_webhook_secret")
+    monkeypatch.setenv("ELEVENLABS_API_KEY", "test_api_key")
+    monkeypatch.setenv("CSAT_AUTO_CREATE", "true")
+
+    response = post_signed_elevenlabs_webhook(
+        client, _inbound_transcription_payload("conv_csat_auto_on")
+    )
+
+    assert response.status_code == 200
+    assert response.json()["csat_invitation_created"] is True
+    # The invitation exists for this call (no email resolvable -> pending lookup).
+    csat = client.get("/csat/calls/conv_csat_auto_on")
+    assert csat.status_code == 200
+    assert csat.json()["status"] == "pending_contact_lookup"
+    get_settings.cache_clear()
+
+
+def test_elevenlabs_webhook_does_not_create_csat_when_flag_off(client, monkeypatch):
+    monkeypatch.setenv("ELEVENLABS_WEBHOOK_SECRET", "test_webhook_secret")
+    monkeypatch.setenv("ELEVENLABS_API_KEY", "test_api_key")
+    monkeypatch.setenv("CSAT_AUTO_CREATE", "false")
+
+    response = post_signed_elevenlabs_webhook(
+        client, _inbound_transcription_payload("conv_csat_auto_off")
+    )
+
+    assert response.status_code == 200
+    assert response.json()["csat_invitation_created"] is False
+    assert client.get("/csat/calls/conv_csat_auto_off").status_code == 404
+    get_settings.cache_clear()

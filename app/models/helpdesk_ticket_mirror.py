@@ -33,6 +33,11 @@ class HelpdeskTicketMirror(SQLModel, table=True):
     zoho_web_url: str | None = Field(default=None)
 
     ticket_created_at: datetime | None = Field(default=None)
+    # Zoho's own "last modified" for the ticket. This — NOT last_synced_at — is
+    # the signal that a ticket actually changed: last_synced_at is our clock and
+    # moves on every sync, so using it to decide "needs reprocessing" re-drafts
+    # every open ticket on every tick.
+    zoho_modified_at: datetime | None = Field(default=None)
     last_synced_at: datetime | None = Field(default=None)
 
     created_at: datetime = Field(default_factory=datetime.utcnow)

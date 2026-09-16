@@ -40,6 +40,13 @@ class Settings(BaseSettings):
       surveymonkey_csat_survey_id: str | None = None
       surveymonkey_csat_collector_id: str | None = None
 
+      # Safety flag: False = CSAT invitations are only created on demand
+      # (manual API / job). True = the inbound voice webhook auto-creates a
+      # CSAT invitation for every eligible finished call. Kept off until the
+      # standing survey/collector are set and the team is ready to send, so
+      # turning CSAT "live" is one flag, not a code change.
+      csat_auto_create: bool = False
+
       surveymonkey_client_id: str | None = None
       surveymonkey_client_secret: str | None = None
       surveymonkey_redirect_uri: str | None = None
@@ -75,11 +82,74 @@ class Settings(BaseSettings):
       # so it stays gated until officers are briefed, same as drafts.
       helpdesk_tag_execute: bool = False
 
+      # Safety flag: False = WhatsApp answers are generated and recorded in
+      # the audit log only, never sent. True = send them immediately as a
+      # real WhatsApp reply — SEPARATE from helpdesk_draft_execute and
+      # deliberately more cautious: a draft still waits for an officer to
+      # review and click send, but a WhatsApp answer with this flag on goes
+      # straight to the candidate with no human in the loop. Also: the
+      # Zoho API this uses (see ZohoDeskClient.send_whatsapp_reply) is
+      # unverified against a live WhatsApp ticket — do not enable until
+      # that's confirmed.
+      helpdesk_whatsapp_auto_reply_execute: bool = False
+
+      # Safety flag: False (default) = grounded email answers are drafted per
+      # helpdesk_draft_execute, same as always — an officer reviews and sends.
+      # True = skip the draft step entirely and send the reply immediately via
+      # ZohoDeskClient.send_reply — SEPARATE from helpdesk_draft_execute, and
+      # a strictly bigger trust step: nobody reads the email before it reaches
+      # the candidate. Takes priority over helpdesk_draft_execute when both
+      # are on (auto-send is the more deliberate choice of the two). Unlike
+      # create_draft_reply (verified live in August 2026), send_reply has
+      # never been called against real Zoho — confirm it works against a real
+      # test ticket before relying on it for real candidate traffic.
+      helpdesk_email_auto_reply_execute: bool = False
+
       # Cron expression for how often the pipeline scheduler enqueues
       # run_helpdesk_pipeline_job. Default: every 5 minutes.
       helpdesk_pipeline_cron: str = "*/5 * * * *"
 
+      # Cron expression for how often the campaign orchestration scheduler
+      # enqueues run_campaign_orchestration_job (advances each active campaign
+      # through its lifecycle). Default: every 1 minute.
+      #
+      # This was */10 (every 10 minutes) until the 2026-09-15 capacity review:
+      # with a 2-3 min average call, a slot that frees up 30 seconds after a
+      # tick sat idle for up to ~9.5 more minutes before the next tick could
+      # refill it — the 10-minute cadence, not concurrency, was the real
+      # throughput ceiling for short calls. A 1-minute tick keeps slots
+      # refilled close to as soon as they free up.
+      campaign_orchestration_cron: str = "* * * * *"
+      # Max outbound calls the orchestrator places per campaign per tick.
+      #
+      # Raised from 1 to 6 on 2026-09-15. Our ElevenLabs plan (Creator) caps
+      # concurrent calls at 10, SHARED between inbound and outbound — 6
+      # leaves 4 lines free for real candidates calling in while an outbound
+      # campaign runs. For a dedicated low-inbound push (e.g. a Saturday),
+      # this can be raised further (temporarily, per-run) since less inbound
+      # traffic is expected to compete for the pool that day.
+      campaign_outbound_concurrency: int = 6
+      # Max outbound call attempts per candidate before the orchestrator gives
+      # up and completes the campaign. The orchestrator auto-requeues retryable
+      # outcomes (no_answer/busy/voicemail/failed) up to this cap. Set to 1 to
+      # disable auto-retry (one attempt only).
+      campaign_outbound_max_attempts: int = 3
+
       zoho_webhook_token: str | None = None
+
+      # Shared secret ElevenLabs sends (Authorization: Bearer ...) when calling the
+      # KB retrieval tool. Leave unset in dev; MUST be set wherever the endpoint is
+      # publicly reachable, or anyone with the URL can query the KB + burn embed cost.
+      voice_kb_tool_token: str | None = None
+
+      # OpenAI-compatible proxy to the inference gateway. ElevenLabs can't reach the
+      # gateway directly (it's behind Cloudflare, which blocks its server calls), so
+      # ElevenLabs points its Custom LLM at OUR /llm/v1 route (reachable via ngrok)
+      # and we forward server-side to the gateway — the same call that works in curl.
+      llm_gateway_chat_url: str = "https://gpu.idhub.ng/v1/chat/completions"
+      llm_gateway_key: str | None = None   # OpenAI-compat key the gateway expects
+      llm_proxy_token: str | None = None    # token ElevenLabs sends us (keeps the proxy closed)
+
 
       # Azure AD app registration for reading the Helpdesk KB from SharePoint
       # (Microsoft Graph, client-credentials flow, Sites.Selected permission).
@@ -90,7 +160,13 @@ class Settings(BaseSettings):
       kb_reader_secret_id: str | None = None
       kb_reader_secret_value: str | None = None
       sharepoint_hostname: str = "dragnetnigeria.sharepoint.com"
-      sharepoint_site_path: str = "/sites/candidateexperience"
+      sharepoint_site_path: str = "/sites/everybody"
+      # Name of the document library the KB docs live in, e.g. "Candidate
+      # experience KB". None means "use the site's default library" — most
+      # sites only have one, but this site's KB lives in its own, so this
+      # must be set for it to resolve to the right library, not an empty one.
+      sharepoint_library_name: str | None = None
+
 
       redis_url: str = "redis://localhost:6379/0"
       rq_default_queue: str = "candidate-experience"

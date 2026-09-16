@@ -66,22 +66,56 @@ class SharePointClient:
         response.raise_for_status()
         return response.json()
 
-    def list_drive_items(self, site_id: str, path: str = "") -> dict:
-        """List files in a site's default document library, optionally under
-        a sub-path (e.g. 'Policy documents')."""
-        suffix = f":/{path}:" if path else ""
+    def list_drives(self, site_id: str) -> dict:
+        """List every document library (drive) on a site, not just the
+        default one — a site can have more than one."""
         response = requests.get(
-            f"{GRAPH_BASE_URL}/sites/{site_id}/drive/root{suffix}/children",
+            f"{GRAPH_BASE_URL}/sites/{site_id}/drives",
             headers=self._headers(),
             timeout=30,
         )
         response.raise_for_status()
         return response.json()
 
-    def download_file(self, site_id: str, item_id: str) -> bytes:
-        """Download a drive item's raw content by its Graph item id."""
+    def get_drive_id(self, site_id: str, library_name: str) -> str:
+        """Resolve a document library's display name to its Graph drive id.
+
+        A site's DEFAULT library (usually "Documents") is reachable without
+        this, but a site can hold several libraries, and Graph only exposes
+        non-default ones by drive id, not by name — so a KB kept in its own
+        library (e.g. "Candidate experience KB") needs this lookup first.
+        Raises with the real library names on a miss, since a typo here would
+        otherwise fail as an opaque 404 deep inside file listing.
+        """
+        drives = self.list_drives(site_id).get("value", [])
+        for drive in drives:
+            if drive.get("name", "").strip().lower() == library_name.strip().lower():
+                return drive["id"]
+        available = [d.get("name") for d in drives]
+        raise RuntimeError(
+            f"No document library named {library_name!r} on this site. "
+            f"Available libraries: {available}"
+        )
+
+    def list_drive_items(self, site_id: str, path: str = "", drive_id: str | None = None) -> dict:
+        """List files under a path, in a specific library (`drive_id`) or,
+        if omitted, the site's default document library."""
+        suffix = f":/{path}:" if path else ""
+        base = f"{GRAPH_BASE_URL}/drives/{drive_id}" if drive_id else f"{GRAPH_BASE_URL}/sites/{site_id}/drive"
         response = requests.get(
-            f"{GRAPH_BASE_URL}/sites/{site_id}/drive/items/{item_id}/content",
+            f"{base}/root{suffix}/children",
+            headers=self._headers(),
+            timeout=30,
+        )
+        response.raise_for_status()
+        return response.json()
+
+    def download_file(self, site_id: str, item_id: str, drive_id: str | None = None) -> bytes:
+        """Download a drive item's raw content by its Graph item id, from a
+        specific library (`drive_id`) or, if omitted, the default one."""
+        base = f"{GRAPH_BASE_URL}/drives/{drive_id}" if drive_id else f"{GRAPH_BASE_URL}/sites/{site_id}/drive"
+        response = requests.get(
+            f"{base}/items/{item_id}/content",
             headers=self._headers(),
             timeout=60,
         )

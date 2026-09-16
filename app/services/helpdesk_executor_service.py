@@ -50,8 +50,13 @@ def execute_ticket_action(
     if not get_settings().helpdesk_tag_execute:
         return False
 
-    fields: dict = {"tags": build_tags_for_action(action)}
+    # Tags go through the dedicated /associateTag endpoint — a ticket PATCH
+    # with a `tags` field is rejected 422 (verified against live Zoho).
+    zoho_client.associate_tags(mirror.zoho_ticket_id, build_tags_for_action(action))
 
+    # Priority/assignee, on the other hand, ARE real ticket fields and only
+    # apply to a route_to_human. Patch them only when there's something to set.
+    fields: dict = {}
     if action.action_type == "route_to_human":
         if action.sensitivity_detected:
             fields["priority"] = SENSITIVE_PRIORITY
@@ -59,5 +64,7 @@ def execute_ticket_action(
         if assignee_id:
             fields["assigneeId"] = assignee_id
 
-    zoho_client.update_ticket(mirror.zoho_ticket_id, fields)
+    if fields:
+        zoho_client.update_ticket(mirror.zoho_ticket_id, fields)
+
     return True

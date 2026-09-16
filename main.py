@@ -17,6 +17,13 @@ from app.api.routes.campaigns import router as campaign_router
 from app.api.routes.jobs import router as jobs_router
 from app.api.routes.helpdesk_webhooks import router as helpdesk_webhooks_router
 from app.api.routes.helpdesk_reports import router as helpdesk_reports_router
+from app.api.routes.csat import router as csat_router
+from app.api.routes.voice_kb import router as voice_kb_router
+from app.api.routes.voice_campaign import router as voice_campaign_router
+from app.api.routes.campaign_admin import router as campaign_admin_router
+from app.api.routes.voice_collect import router as voice_collect_router
+from app.api.routes.voice_outbound import router as voice_outbound_router
+from app.api.routes.llm_proxy import router as llm_proxy_router
 
 settings = get_settings()
 
@@ -53,3 +60,10 @@ app.include_router(campaign_router)
 app.include_router(jobs_router)
 app.include_router(helpdesk_webhooks_router)
 app.include_router(helpdesk_reports_router)
+app.include_router(csat_router)
+app.include_router(voice_kb_router)
+app.include_router(voice_campaign_router)
+app.include_router(campaign_admin_router)
+app.include_router(voice_collect_router)
+app.include_router(voice_outbound_router)
+app.include_router(llm_proxy_router)

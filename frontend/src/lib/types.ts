@@ -19,7 +19,7 @@
 // Controlled vocabularies (app/core/vocabulary.py + app/schemas/*)
 // ---------------------------------------------------------------------------
 
-export const ASSESSMENT_TOOLS = ["FOT", "Scholastica"] as const;
+export const ASSESSMENT_TOOLS = ["FOT", "Test Haven", "Scholastica"] as const;
 export type AssessmentTool = (typeof ASSESSMENT_TOOLS)[number];
 
 export const CALL_DIRECTIONS = ["inbound", "outbound"] as const;
@@ -50,6 +50,20 @@ export const CAMPAIGN_STATUSES = [
   "failed",
 ] as const;
 export type CampaignStatus = (typeof CAMPAIGN_STATUSES)[number];
+
+export const CALL_REASONS = [
+  "schedule_confirmation",
+  "reminder",
+  "no_show_followup",
+] as const;
+export type CallReason = (typeof CALL_REASONS)[number];
+
+/** Human labels for the outbound call reason. */
+export const CALL_REASON_LABELS: Record<CallReason, string> = {
+  schedule_confirmation: "Schedule confirmation",
+  reminder: "Reminder",
+  no_show_followup: "No-show follow-up",
+};
 
 export const SURVEY_STATUSES = [
   "not_sent",
@@ -157,6 +171,42 @@ export interface CampaignRead {
   created_at: string;
   survey_sent_at: string | null;
   non_responder_checked_at: string | null;
+  // Inbound IVR / KB scoping
+  inbound_active: boolean;
+  active_from: string | null;
+  active_until: string | null;
+  kb_source: string | null;
+  kb_scope: string | null;
+  // Outbound call context
+  call_reason: CallReason | null;
+  organization_name: string | null;
+  assessment_at: string | null;
+  assessment_location: string | null;
+  practice_test_url: string | null;
+  contact_info: string | null;
+}
+
+export interface CampaignOutboundUpdate {
+  call_reason?: CallReason | null;
+  organization_name?: string | null;
+  assessment_at?: string | null;
+  assessment_location?: string | null;
+  practice_test_url?: string | null;
+  contact_info?: string | null;
+}
+
+export interface CampaignInboundUpdate {
+  inbound_active?: boolean;
+  active_from?: string | null;
+  active_until?: string | null;
+  kb_source?: string | null;
+  kb_scope?: string | null;
+}
+
+export interface CampaignReindexResponse {
+  campaign_id: string;
+  scope: string;
+  reindexed: number;
 }
 
 export interface CampaignCreate {
@@ -165,6 +215,13 @@ export interface CampaignCreate {
   survey_id?: string | null;
   surveymonkey_collector_id?: string | null;
   response_wait_hours?: number; // default 24, range 1–336
+  // Outbound call context (the outreach script's [brackets])
+  call_reason?: CallReason | null;
+  organization_name?: string | null;
+  assessment_at?: string | null;
+  assessment_location?: string | null;
+  practice_test_url?: string | null;
+  contact_info?: string | null;
 }
 
 export interface CampaignStatusUpdate {
@@ -312,6 +369,18 @@ export interface OutboundCallAttemptRead {
   created_at: string;
 }
 
+export interface OutboundSurveyAnswerRead {
+  id: string;
+  outbound_attempt_id: string;
+  candidate_id: string;
+  candidate_name: string | null;
+  position: number | null;
+  question: string;
+  answer_type: string | null;
+  answer: string;
+  created_at: string;
+}
+
 export interface OutboundCallAttemptStatusUpdate {
   status: OutboundCallAttemptStatus;
   disposition?: string | null;
@@ -358,6 +427,24 @@ export interface HelpdeskSummary {
   drafts_placed_on_zoho: number;
   automation_rate: number;
   category_action_mix: Record<string, Record<string, number>>;
+}
+
+export interface HelpdeskAIActionRead {
+  id: string;
+  zoho_ticket_id: string;
+  subject: string | null;
+  candidate_email: string | null;
+  channel: string | null;
+  action_type: string;
+  rule: string;
+  issue_category: string | null;
+  confidence_label: string | null;
+  sensitivity_detected: boolean;
+  grounding_status: string | null;
+  draft_text: string | null;
+  reason: string | null;
+  executed: boolean;
+  created_at: string;
 }
 
 // ---------------------------------------------------------------------------
