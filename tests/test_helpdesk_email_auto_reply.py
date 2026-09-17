@@ -239,10 +239,14 @@ def test_auto_reply_test_allowlist_falls_back_to_draft_for_other_addresses(sessi
     get_settings.cache_clear()
 
 
-def test_auto_reply_carries_the_ticket_number_tag_in_the_subject(session, monkeypatch):
-    """Real send discovered 2026-09-17: without this, the sent email had no
-    subject at all, so a candidate's reply wouldn't thread back into the
-    same ticket — Zoho's own replies always carry "Re:[## <number> ##] ..."."""
+def test_auto_reply_never_passes_a_subject_kwarg_to_zoho(session, monkeypatch):
+    """Regression guard: a real send discovered 2026-09-17 that Zoho's API
+    rejects a `subject` field outright on both sendReply and draftReply
+    ("An extra parameter 'subject' is found", HTTP 422) — a first attempt
+    at tagging the outgoing subject for thread continuity passed one
+    anyway and broke every live send until reverted. process_ticket must
+    never pass `subject` to send_reply/create_draft_reply again until a
+    real, Zoho-accepted mechanism is found."""
     monkeypatch.setenv("HELPDESK_EMAIL_AUTO_REPLY_EXECUTE", "true")
     get_settings.cache_clear()
 
@@ -255,7 +259,7 @@ def test_auto_reply_carries_the_ticket_number_tag_in_the_subject(session, monkey
 
     process_ticket(session, zoho_client, mirror)
 
-    assert zoho_client.sent[0]["subject"] == "Re:[## 102802 ##] Password reset"
+    assert "subject" not in zoho_client.sent[0]
 
     get_settings.cache_clear()
 

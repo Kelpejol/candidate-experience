@@ -148,12 +148,13 @@ class ZohoDeskClient:
         This is the launch-mode path for the PSA's email flow: the AI drafts,
         a human approves and sends from Zoho Desk.
 
-        `subject` should carry the `[## <ticketNumber> ##]` tag Zoho itself
-        uses (e.g. "Re:[## 102802 ##] Password reset") — found missing
-        2026-09-17 via a real test send: without it, a reply came back with
-        no subject at all, meaning a candidate's follow-up reply would not
-        thread back into this same ticket, breaking the "keep the ticket ID
-        in the subject line" advice already in the KB.
+        `subject` is accepted but NOT sent to Zoho — confirmed 2026-09-17
+        that Zoho's real API rejects it outright ("An extra parameter
+        'subject' is found", HTTP 422), which briefly broke every live send
+        after a first attempt at this fix wrongly assumed it was a valid
+        field. Kept as a no-op parameter so callers don't need to change;
+        the real subject-tagging gap (a sent reply currently has no subject
+        at all) is still open — see docs/blocked-items-and-helpdesk-plan.md.
         """
         payload = {
             "channel": "EMAIL",
@@ -162,8 +163,6 @@ class ZohoDeskClient:
             "contentType": content_type,
             "content": content,
         }
-        if subject:
-            payload["subject"] = subject
         return self._request("POST", f"/tickets/{ticket_id}/draftReply", json=payload)
 
     def send_reply(
@@ -177,9 +176,8 @@ class ZohoDeskClient:
     ) -> dict:
         """Send an email reply on the ticket immediately.
 
-        See create_draft_reply's `subject` note — the same tag is needed here
-        so a candidate's reply threads back into this ticket instead of
-        opening a new one.
+        See create_draft_reply's `subject` note — same confirmed-invalid
+        parameter, same no-op here.
         """
         payload = {
             "channel": "EMAIL",
@@ -188,8 +186,6 @@ class ZohoDeskClient:
             "contentType": content_type,
             "content": content,
         }
-        if subject:
-            payload["subject"] = subject
         return self._request("POST", f"/tickets/{ticket_id}/sendReply", json=payload)
 
     def send_whatsapp_reply(self, ticket_id: str, content: str) -> dict:

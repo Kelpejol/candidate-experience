@@ -85,11 +85,18 @@ def apply_grounding_gate(
 
 
 def _reply_subject_for(mirror: HelpdeskTicketMirror) -> str | None:
-    """Build the "Re:[## <ticketNumber> ##] <subject>" tag Zoho's own
-    replies carry, so a candidate's follow-up reply threads back into this
-    same ticket instead of opening a new one. None if we don't have both
-    pieces (should not happen for a synced ticket, but never block a send
-    over a missing subject)."""
+    """What we WANT Zoho to use as the outgoing reply's subject: the same
+    "Re:[## <ticketNumber> ##] <subject>" tag its own replies carry, so a
+    candidate's follow-up threads back into this ticket instead of opening
+    a new one.
+
+    NOT currently wired to send_reply/create_draft_reply: confirmed
+    2026-09-17 that Zoho's real API rejects a `subject` field outright on
+    both endpoints ("An extra parameter 'subject' is found", HTTP 422) —
+    passing it broke every live send until reverted. Kept here, unused, as
+    the one part of that attempt that was actually correct (the tag format
+    itself, confirmed against a real officer reply) for whoever solves the
+    delivery mechanism — see docs/blocked-items-and-helpdesk-plan.md."""
     if not mirror.ticket_number or not mirror.subject:
         return None
     return f"Re:[## {mirror.ticket_number} ##] {mirror.subject}"
@@ -304,7 +311,6 @@ def process_ticket(session: Session, zoho_client, mirror: HelpdeskTicketMirror) 
                 from_email_address=get_settings().helpdesk_from_email,
                 to=mirror.candidate_email or "",
                 content_type="plainText",
-                subject=_reply_subject_for(mirror),
             )
             executed = True
         elif get_settings().helpdesk_draft_execute:
@@ -314,7 +320,6 @@ def process_ticket(session: Session, zoho_client, mirror: HelpdeskTicketMirror) 
                 from_email_address=get_settings().helpdesk_from_email,
                 to=mirror.candidate_email or "",
                 content_type="plainText",
-                subject=_reply_subject_for(mirror),
             )
             executed = True
 

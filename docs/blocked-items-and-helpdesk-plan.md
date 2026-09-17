@@ -8,7 +8,7 @@ The PSA is clear about the separation:
 - Helpdesk = WhatsApp and email support through Zoho Desk.
 - The two systems should not share storage, knowledge base, or conversation threads.
 - Calling Agent records stay in our call/campaign service.
-- Helpdesk records stay in Zoho Desk.
+- Helpdesk records say in Zoho Desk.
 
 ## Blocked Calling Agent Items
 
@@ -1435,10 +1435,36 @@ Found two real, now-fixed issues this way:
    `Re:[## 102799 ##] Unable to log in` — Zoho's own convention for
    threading a candidate's follow-up reply back into the same ticket. Ours
    had `"subject": null`, confirmed directly from the real sent thread's
-   detail. Fixed: both client methods take an optional `subject`, and
-   `helpdesk_ai_service._reply_subject_for(mirror)` builds
-   `"Re:[## <ticket_number> ##] <subject>"` from the mirror's own synced
-   fields. Re-verified live after the fix.
+   detail. **First fix attempt was wrong and briefly broke production**: added
+   an optional `subject` param to both client methods, assuming Zoho's API
+   accepted it — it does not. A real send against ticket 102809 came back
+   `422 UNPROCESSABLE_ENTITY: "An extra parameter 'subject' is found"` on
+   both `sendReply` and `draftReply`, confirmed by reproducing the exact
+   call directly. This meant **every live auto-send silently failed** for
+   the ~15 minutes between that deploy and catching it (caught because the
+   user's own next test email got no reply at all). Reverted immediately:
+   neither client method sends `subject` to Zoho anymore (kept as an
+   accepted-but-ignored parameter so callers don't need to change);
+   `_reply_subject_for(mirror)` is kept, unused, as the one part that was
+   actually correct (the tag format itself, confirmed against a real
+   officer reply) for whoever finds the real delivery mechanism — Zoho's
+   own UI clearly produces this tag somehow, just not through this public
+   REST endpoint. Added regression tests at both the client level
+   (`test_zoho_desk_client.py`: `subject` passed in never reaches the real
+   Zoho payload) and the pipeline level (`process_ticket` never passes
+   `subject` to either method) so this exact mistake can't reappear
+   silently. Re-verified live after the revert — a real send to ticket
+   102809 succeeded normally.
+
+   **The underlying gap (no subject-tag threading) is still open and
+   unsolved** — a candidate's reply to an AI-sent email may still not
+   thread back into the same Zoho ticket. Worth real investigation
+   (possibly Zoho's actual mechanism is unrelated to the reply endpoints —
+   e.g. a per-ticket setting, or something set via `update_ticket`) before
+   this is trusted at full volume, but not a Friday blocker: worst case is
+   a candidate's follow-up creates a new ticket instead of continuing the
+   old one, which still reaches a human/the AI either way, just without
+   the prior context attached.
 
 Also found and fixed a test-isolation bug this surfaced: with a real test
 address left configured in the deployed VM's `.env`

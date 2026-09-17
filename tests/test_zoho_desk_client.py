@@ -169,6 +169,64 @@ def test_create_draft_reply_posts_email_draft(monkeypatch):
     assert captured["json"]["to"] == "candidate@example.com"
 
 
+def test_create_draft_reply_never_sends_a_subject_field_to_zoho(monkeypatch):
+    """Regression guard: confirmed live 2026-09-17 that Zoho's real API
+    rejects `subject` outright on this endpoint ("An extra parameter
+    'subject' is found", HTTP 422) — passing it here broke every live draft
+    creation until reverted. Even if a caller passes `subject=`, it must
+    never reach the actual Zoho payload."""
+    captured = {}
+
+    def fake_request(method, url, headers=None, params=None, json=None, timeout=None):
+        captured.update({"json": json})
+        return FakeResponse(payload={"id": "draft_1"})
+
+    monkeypatch.setattr(zoho_desk_module.requests, "request", fake_request)
+
+    client = ZohoDeskClient(
+        base_url="https://desk.zoho.com/api/v1",
+        token_provider=FakeTokenProvider(),
+        org_id="org_1",
+    )
+
+    client.create_draft_reply(
+        ticket_id="ticket_1",
+        content="<p>Hello</p>",
+        from_email_address="support@dragnet.com",
+        to="candidate@example.com",
+        subject="Re:[## 102802 ##] Password reset",
+    )
+
+    assert "subject" not in captured["json"]
+
+
+def test_send_reply_never_sends_a_subject_field_to_zoho(monkeypatch):
+    """Same regression guard as create_draft_reply's, for sendReply."""
+    captured = {}
+
+    def fake_request(method, url, headers=None, params=None, json=None, timeout=None):
+        captured.update({"json": json})
+        return FakeResponse(payload={"id": "sent_1"})
+
+    monkeypatch.setattr(zoho_desk_module.requests, "request", fake_request)
+
+    client = ZohoDeskClient(
+        base_url="https://desk.zoho.com/api/v1",
+        token_provider=FakeTokenProvider(),
+        org_id="org_1",
+    )
+
+    client.send_reply(
+        ticket_id="ticket_1",
+        content="Kindly use the forgotten password option.",
+        from_email_address="support@dragnet.com",
+        to="candidate@example.com",
+        subject="Re:[## 102802 ##] Password reset",
+    )
+
+    assert "subject" not in captured["json"]
+
+
 def test_send_whatsapp_reply_posts_a_public_comment(monkeypatch):
     """Unverified against a real WhatsApp ticket (see the method's own
     docstring) — this test only pins down what OUR client currently sends,
