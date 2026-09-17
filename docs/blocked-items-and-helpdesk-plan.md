@@ -1397,3 +1397,69 @@ covered), backlogged for a post-Friday pass rather than rushed in now:
 Full raw results saved locally at `/tmp/phase2_results_vm.json` (1155
 entries) and `/tmp/phase2_results.json`/`/tmp/phase2_tested_ids.json` (the
 150-ticket dev-machine batch + checkpoint) for the follow-up pass.
+
+Also built an officer-facing review page for the 38 confirmed-genuine gaps
+(clustered from the raw 482 `kb_gap` candidates by embedding similarity,
+then each one live-verified against `retrieve_grounding` — 164 of 202
+clusters turned out to already be covered and were dropped, not guessed
+away) — https://claude.ai/artifact/Czjg67stzakVLckp9YPz2p — pending the
+officer's approve/reject pass before anything gets added.
+
+## 2026-09-17: real end-to-end email send test, two real bugs found and fixed
+
+Added a scoped test allowlist, `helpdesk_email_auto_reply_test_emails` (comma-
+separated), so a single real address can get the live auto-send experience
+without opening auto-send to every candidate — the existing global flag
+alone couldn't do this safely. Empty (default) = no restriction, same as
+before this setting existed.
+
+Sent real test emails end-to-end (external Gmail address, since our own
+`@dragnet-solutions.com` addresses are correctly treated as suspicious/bounce
+by `is_system_bounce_notification` — confirmed this is by design, not a bug,
+after our first test using an internal address got silently suppressed).
+Found two real, now-fixed issues this way:
+
+1. **Zoho's own sentiment analysis can override a perfectly answerable
+   question.** A neutrally-answerable "trouble logging in, how do I reset my
+   password" message got flagged NEGATIVE by Zoho's sentiment engine (likely
+   the words "not working"/"trouble"), which fired `negative_sentiment_backstop`
+   and escalated to a human before the KB-answer path was ever considered.
+   Confirmed via the real ticket's AI-action row. Not a bug — the rule is a
+   deliberate, conservative safety net — but it means real auto-answer
+   coverage will be measurably lower than KB-only testing suggested, purely
+   from how candidates phrase things. No code change; documented so it isn't
+   mistaken for a KB gap later.
+
+2. **Outbound replies (both `send_reply` and `create_draft_reply`) sent with
+   no subject line at all.** A real officer's reply to the same test carried
+   `Re:[## 102799 ##] Unable to log in` — Zoho's own convention for
+   threading a candidate's follow-up reply back into the same ticket. Ours
+   had `"subject": null`, confirmed directly from the real sent thread's
+   detail. Fixed: both client methods take an optional `subject`, and
+   `helpdesk_ai_service._reply_subject_for(mirror)` builds
+   `"Re:[## <ticket_number> ##] <subject>"` from the mirror's own synced
+   fields. Re-verified live after the fix.
+
+Also found and fixed a test-isolation bug this surfaced: with a real test
+address left configured in the deployed VM's `.env`
+(`HELPDESK_EMAIL_AUTO_REPLY_TEST_EMAILS`), 4 of the email-auto-reply tests
+silently picked up that live value and failed, because they'd never been
+isolated from the real environment. Added an autouse fixture that clears
+the var by default; tests exercising the allowlist itself still set it
+explicitly, which correctly overrides the fixture.
+
+**Confirmed working, not a bug**: a real human officer picked up the
+negative-sentiment-escalated test ticket and asked a clarifying question
+("which assessment are you taking?") — something our AI cannot currently do.
+Checked the actual code: `get_latest_candidate_message` only ever fetches
+the single newest incoming message: no prior thread history (including an
+officer's own earlier clarifying question) is passed to classification or
+generation. `decide_ticket_action` has exactly two outcomes — answer from
+the KB, or escalate — with no "ask for clarification" path. Explicitly
+deferred past Friday, by choice: multi-turn conversations are rare relative
+to first-contact questions, and the current failure mode is safe (escalates
+rather than guesses wrong) rather than harmful. If revisited, the smallest
+safe version is widening context to the last 2-3 thread messages (better
+read comprehension of an existing reply) without adding the ability to ask
+its own follow-up questions (a materially bigger feature: new action type,
+new safety review, likely still human-in-the-loop given the trust step).
