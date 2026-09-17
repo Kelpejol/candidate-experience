@@ -5,11 +5,28 @@ setting that takes priority over helpdesk_draft_execute when both are set."""
 
 from datetime import datetime
 
+import pytest
+
 from app.core.config import get_settings
 from app.models.helpdesk_ticket_mirror import HelpdeskTicketMirror
 from app.services import helpdesk_ai_service
 from app.services.helpdesk_ai_service import process_ticket
 from app.services.helpdesk_kb_service import GroundingResult
+
+
+@pytest.fixture(autouse=True)
+def _no_test_allowlist_by_default(monkeypatch):
+    """Isolate every test from whatever HELPDESK_EMAIL_AUTO_REPLY_TEST_EMAILS
+    happens to be set to in the real environment's .env (e.g. a live test
+    address left configured on a deployed box) — found 2026-09-17 when a
+    real .env value leaked into a test run and silently restricted
+    auto-send to an address these tests don't use. Tests that specifically
+    exercise the allowlist set this env var themselves, after this fixture
+    runs, which overrides it as intended."""
+    monkeypatch.delenv("HELPDESK_EMAIL_AUTO_REPLY_TEST_EMAILS", raising=False)
+    get_settings.cache_clear()
+    yield
+    get_settings.cache_clear()
 
 
 def _mirror(**overrides):
