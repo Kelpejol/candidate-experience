@@ -1328,3 +1328,72 @@ to `KB/General` and `KB/Scholastica` on SharePoint and a reindex.
 Production host: a separate VM, not this dev machine — deployment there is
 the user's own action item, separate from everything built/tested locally
 this session.
+
+## 2026-09-16: production deployment + large-scale historical evaluation
+
+Deployed to the production VM (`InterviewerAdmin`, Ubuntu 22.04, already
+hosting `dragnet-gpu`/`gpu.idhub.ng`, `erecruiter-server`/`erecruiter-web`,
+and unrelated Postgres/RabbitMQ/Apache/PHP-FPM services — extreme care taken
+not to disturb any of them). Checked out to `/var/www/candidate-experience`,
+Python 3.12 installed alongside the box's existing 3.10/3.11 (this repo's
+pinned `numpy==2.5.1` needs 3.12+; installed additively via deadsnakes, never
+touching the system default). Real bugs fixed along the way: pip silently
+fell back to `--user` installs when venv creation failed (root cause: missing
+`python3.10-venv`) — verified this never actually altered `dragnet-gpu`'s own
+already-satisfied dependency pins before moving on; PM2 misdetected the bare
+`uvicorn` script as a Node.js file (fixed by invoking `python -m uvicorn`
+instead); `PYTHONPATH` needed setting explicitly per `pm2 start` invocation,
+a shell `export` alone did not propagate to PM2's process registration; the
+uvicorn target was `app.main:app` (copied from `dragnet-gpu`'s own pattern by
+mistake) when this repo's entrypoint is actually root-level `main.py` — fixed
+to `main:app`. All four processes (`ce-api`, `ce-worker`,
+`ce-helpdesk-scheduler`, `ce-campaign-scheduler`) now run under PM2 with 0
+restarts, `pm2 save`d so they survive a reboot via the box's existing
+`pm2-azureuser.service`. KB reindexed on the VM across all four scopes
+(General 18, FOT 46, Scholastica 21, Test Haven 51 chunks), verified live via
+`retrieve_grounding`. `HELPDESK_EMAIL_AUTO_REPLY_EXECUTE` deliberately left
+`False` — the actual go-live switch, to be flipped only when the user says so
+(after the officer heads-up). Domain/Apache vhost/SSL and the Postgres+
+pgvector migration both explicitly deferred post-Friday, by the user's own
+choice — confirmed the Zoho polling pipeline (5-minute cron, outbound only)
+needs no public URL, and the officer-facing React frontend isn't required
+for the auto-reply path either (Zoho Desk remains officers' own interface for
+anything routed to a human).
+
+Ran the historical accuracy eval at real scale on the VM: 1000 new tickets
+(1155 cumulative with the earlier 150-ticket dev-machine batch), stratified
+across the full ~3,844-ticket untested backlog. Scores: factual alignment
+4.04/5, hallucination 4.32/5, escalation correctness 3.94/5, tone 4.6/5.
+Corrected an over-read of the raw "312 low scorers" number: 51 are the
+already-known `availability_confirmation` harness artifact (production never
+generates a reply for these), at least 37 more are cases where the real
+historical officer only sent a generic "ticketed for review" ack with no
+actual technical fix — directly verified one of these live and confirmed the
+AI's answer was correctly grounded in real KB content, not hallucinated, it
+simply didn't match a non-answer. Of 482 raw `kb_gap` candidates, the large
+majority cluster around themes already fixed this morning (ticket-ID/
+follow-up process, reschedule policy, outcome/next-stage contact) —
+re-verified all of those live via `retrieve_grounding` post-reindex and
+confirmed they're now correctly retrieved, so not new gaps.
+
+**Genuinely new KB gaps found** (confirmed distinct from anything already
+covered), backlogged for a post-Friday pass rather than rushed in now:
+- Test-day logistics: calculators, plain paper for calculations, external
+  keyboard/headphones, taking the test on Android/Chromebook/mobile
+- Time/accommodation requests: test time extension for technical issues,
+  schedule-conflict timing adjustments, remote/online interview for
+  candidates outside Nigeria
+- Account/profile: correcting Scholastica profile errors post-submission,
+  changing Academic Referee info, deleting an account, using a next-of-kin's
+  account for underage registration
+- Process questions: confirming whether a test submission actually
+  succeeded, whether cheating-prevention/fair-grading measures exist,
+  whether original credentials are needed at screening
+- Off-topic but recurring: candidates/others asking how to apply for a job
+  *at* Dragnet Solutions itself (not a candidate assessment question), and
+  business-partnership inquiries — both need a short redirect-style answer
+  rather than silence
+
+Full raw results saved locally at `/tmp/phase2_results_vm.json` (1155
+entries) and `/tmp/phase2_results.json`/`/tmp/phase2_tested_ids.json` (the
+150-ticket dev-machine batch + checkpoint) for the follow-up pass.

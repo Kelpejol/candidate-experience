@@ -160,6 +160,74 @@ def test_auto_reply_takes_priority_when_both_flags_are_on(session, monkeypatch):
     get_settings.cache_clear()
 
 
+def test_auto_reply_test_allowlist_sends_for_listed_address(session, monkeypatch):
+    """A candidate email on the allowlist gets the real auto-send path."""
+    monkeypatch.setenv("HELPDESK_EMAIL_AUTO_REPLY_EXECUTE", "true")
+    monkeypatch.setenv("HELPDESK_EMAIL_AUTO_REPLY_TEST_EMAILS", "ada@example.com, other@example.com")
+    get_settings.cache_clear()
+
+    mirror = _mirror(candidate_email="ada@example.com")
+    session.add(mirror)
+    session.commit()
+
+    _patch_common(monkeypatch, grounded=True)
+    zoho_client = _FakeZohoClient()
+
+    action = process_ticket(session, zoho_client, mirror)
+
+    assert action.action_type == "auto_reply"
+    assert len(zoho_client.sent) == 1
+    assert zoho_client.drafts_created == []
+
+    get_settings.cache_clear()
+
+
+def test_auto_reply_test_allowlist_falls_back_to_draft_for_other_addresses(session, monkeypatch):
+    """A candidate email NOT on the allowlist falls back to draft_execute
+    (or no-op, if that's also off) exactly as if auto-reply were off — the
+    whole point of the allowlist is that unlisted candidates are unaffected."""
+    monkeypatch.setenv("HELPDESK_EMAIL_AUTO_REPLY_EXECUTE", "true")
+    monkeypatch.setenv("HELPDESK_EMAIL_AUTO_REPLY_TEST_EMAILS", "only-this-one@example.com")
+    monkeypatch.setenv("HELPDESK_DRAFT_EXECUTE", "true")
+    get_settings.cache_clear()
+
+    mirror = _mirror(candidate_email="a-real-candidate@gmail.com")
+    session.add(mirror)
+    session.commit()
+
+    _patch_common(monkeypatch, grounded=True)
+    zoho_client = _FakeZohoClient()
+
+    action = process_ticket(session, zoho_client, mirror)
+
+    assert action.action_type == "draft_reply"
+    assert zoho_client.sent == []
+    assert len(zoho_client.drafts_created) == 1
+
+    get_settings.cache_clear()
+
+
+def test_auto_reply_empty_allowlist_means_no_restriction(session, monkeypatch):
+    """Empty (default) allowlist — auto-send still applies to everyone,
+    unchanged from before this setting existed."""
+    monkeypatch.setenv("HELPDESK_EMAIL_AUTO_REPLY_EXECUTE", "true")
+    get_settings.cache_clear()
+
+    mirror = _mirror(candidate_email="anyone@gmail.com")
+    session.add(mirror)
+    session.commit()
+
+    _patch_common(monkeypatch, grounded=True)
+    zoho_client = _FakeZohoClient()
+
+    action = process_ticket(session, zoho_client, mirror)
+
+    assert action.action_type == "auto_reply"
+    assert len(zoho_client.sent) == 1
+
+    get_settings.cache_clear()
+
+
 def test_ungrounded_question_still_escalates_not_sent(session, monkeypatch):
     monkeypatch.setenv("HELPDESK_EMAIL_AUTO_REPLY_EXECUTE", "true")
     get_settings.cache_clear()

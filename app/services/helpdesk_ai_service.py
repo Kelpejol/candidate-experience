@@ -84,6 +84,21 @@ def apply_grounding_gate(
     )
 
 
+def _auto_reply_allowed_for(candidate_email: str | None) -> bool:
+    """Gate for helpdesk_email_auto_reply_execute's allowlist.
+
+    Empty allowlist (the default) means no restriction — every candidate is
+    eligible, same as before this setting existed. A non-empty allowlist
+    restricts auto-send to just those addresses, so a real test address can
+    get the live auto-send experience before it's trusted for everyone.
+    """
+    raw = get_settings().helpdesk_email_auto_reply_test_emails
+    if not raw.strip():
+        return True
+    allowed = {e.strip().lower() for e in raw.split(",") if e.strip()}
+    return bool(candidate_email) and candidate_email.strip().lower() in allowed
+
+
 def _resolve_kb_scopes(session: Session, classification) -> tuple[str | None, str | None]:
     """Turn what the classifier read off the ticket into KB scope tags.
 
@@ -264,7 +279,9 @@ def process_ticket(session: Session, zoho_client, mirror: HelpdeskTicketMirror) 
                     ticket_id=mirror.zoho_ticket_id, content=draft_text
                 )
                 executed = True
-        elif get_settings().helpdesk_email_auto_reply_execute:
+        elif get_settings().helpdesk_email_auto_reply_execute and _auto_reply_allowed_for(
+            mirror.candidate_email
+        ):
             # Full-operation mode: skip the draft step, send immediately.
             # Takes priority over helpdesk_draft_execute — see config.py.
             decision = TicketDecision(

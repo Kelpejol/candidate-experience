@@ -105,6 +105,15 @@ class Settings(BaseSettings):
       # test ticket before relying on it for real candidate traffic.
       helpdesk_email_auto_reply_execute: bool = False
 
+      # Optional safety scope for the flag above: a comma-separated allowlist
+      # of candidate email addresses. When set, auto-send only fires for
+      # tickets from these addresses — every other candidate falls back to
+      # helpdesk_draft_execute (or no-op) exactly as if auto-reply were off.
+      # Lets a real test address get the live auto-send experience before
+      # trusting it for every candidate. Empty (default) = no restriction,
+      # auto-send applies to everyone, same as always.
+      helpdesk_email_auto_reply_test_emails: str = ""
+
       # Cron expression for how often the pipeline scheduler enqueues
       # run_helpdesk_pipeline_job. Default: every 5 minutes.
       helpdesk_pipeline_cron: str = "*/5 * * * *"
