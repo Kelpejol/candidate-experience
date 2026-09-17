@@ -84,6 +84,17 @@ def apply_grounding_gate(
     )
 
 
+def _reply_subject_for(mirror: HelpdeskTicketMirror) -> str | None:
+    """Build the "Re:[## <ticketNumber> ##] <subject>" tag Zoho's own
+    replies carry, so a candidate's follow-up reply threads back into this
+    same ticket instead of opening a new one. None if we don't have both
+    pieces (should not happen for a synced ticket, but never block a send
+    over a missing subject)."""
+    if not mirror.ticket_number or not mirror.subject:
+        return None
+    return f"Re:[## {mirror.ticket_number} ##] {mirror.subject}"
+
+
 def _auto_reply_allowed_for(candidate_email: str | None) -> bool:
     """Gate for helpdesk_email_auto_reply_execute's allowlist.
 
@@ -293,6 +304,7 @@ def process_ticket(session: Session, zoho_client, mirror: HelpdeskTicketMirror) 
                 from_email_address=get_settings().helpdesk_from_email,
                 to=mirror.candidate_email or "",
                 content_type="plainText",
+                subject=_reply_subject_for(mirror),
             )
             executed = True
         elif get_settings().helpdesk_draft_execute:
@@ -302,6 +314,7 @@ def process_ticket(session: Session, zoho_client, mirror: HelpdeskTicketMirror) 
                 from_email_address=get_settings().helpdesk_from_email,
                 to=mirror.candidate_email or "",
                 content_type="plainText",
+                subject=_reply_subject_for(mirror),
             )
             executed = True
 

@@ -207,6 +207,27 @@ def test_auto_reply_test_allowlist_falls_back_to_draft_for_other_addresses(sessi
     get_settings.cache_clear()
 
 
+def test_auto_reply_carries_the_ticket_number_tag_in_the_subject(session, monkeypatch):
+    """Real send discovered 2026-09-17: without this, the sent email had no
+    subject at all, so a candidate's reply wouldn't thread back into the
+    same ticket — Zoho's own replies always carry "Re:[## <number> ##] ..."."""
+    monkeypatch.setenv("HELPDESK_EMAIL_AUTO_REPLY_EXECUTE", "true")
+    get_settings.cache_clear()
+
+    mirror = _mirror(ticket_number="102802", subject="Password reset")
+    session.add(mirror)
+    session.commit()
+
+    _patch_common(monkeypatch, grounded=True)
+    zoho_client = _FakeZohoClient()
+
+    process_ticket(session, zoho_client, mirror)
+
+    assert zoho_client.sent[0]["subject"] == "Re:[## 102802 ##] Password reset"
+
+    get_settings.cache_clear()
+
+
 def test_auto_reply_empty_allowlist_means_no_restriction(session, monkeypatch):
     """Empty (default) allowlist — auto-send still applies to everyone,
     unchanged from before this setting existed."""

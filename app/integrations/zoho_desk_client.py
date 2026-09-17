@@ -141,23 +141,30 @@ class ZohoDeskClient:
         from_email_address: str,
         to: str,
         content_type: str = "html",
+        subject: str | None = None,
     ) -> dict:
         """Save an email reply as a draft on the ticket for an officer to review.
 
         This is the launch-mode path for the PSA's email flow: the AI drafts,
         a human approves and sends from Zoho Desk.
+
+        `subject` should carry the `[## <ticketNumber> ##]` tag Zoho itself
+        uses (e.g. "Re:[## 102802 ##] Password reset") — found missing
+        2026-09-17 via a real test send: without it, a reply came back with
+        no subject at all, meaning a candidate's follow-up reply would not
+        thread back into this same ticket, breaking the "keep the ticket ID
+        in the subject line" advice already in the KB.
         """
-        return self._request(
-            "POST",
-            f"/tickets/{ticket_id}/draftReply",
-            json={
-                "channel": "EMAIL",
-                "fromEmailAddress": from_email_address,
-                "to": to,
-                "contentType": content_type,
-                "content": content,
-            },
-        )
+        payload = {
+            "channel": "EMAIL",
+            "fromEmailAddress": from_email_address,
+            "to": to,
+            "contentType": content_type,
+            "content": content,
+        }
+        if subject:
+            payload["subject"] = subject
+        return self._request("POST", f"/tickets/{ticket_id}/draftReply", json=payload)
 
     def send_reply(
         self,
@@ -166,22 +173,24 @@ class ZohoDeskClient:
         from_email_address: str,
         to: str,
         content_type: str = "html",
+        subject: str | None = None,
     ) -> dict:
         """Send an email reply on the ticket immediately.
 
-        Reserved for the later auto-reply phase; launch mode is draft-only.
+        See create_draft_reply's `subject` note — the same tag is needed here
+        so a candidate's reply threads back into this ticket instead of
+        opening a new one.
         """
-        return self._request(
-            "POST",
-            f"/tickets/{ticket_id}/sendReply",
-            json={
-                "channel": "EMAIL",
-                "fromEmailAddress": from_email_address,
-                "to": to,
-                "contentType": content_type,
-                "content": content,
-            },
-        )
+        payload = {
+            "channel": "EMAIL",
+            "fromEmailAddress": from_email_address,
+            "to": to,
+            "contentType": content_type,
+            "content": content,
+        }
+        if subject:
+            payload["subject"] = subject
+        return self._request("POST", f"/tickets/{ticket_id}/sendReply", json=payload)
 
     def send_whatsapp_reply(self, ticket_id: str, content: str) -> dict:
         """Send a reply on a WhatsApp-channel ticket.
