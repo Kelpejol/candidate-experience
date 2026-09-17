@@ -20,10 +20,20 @@ def _no_test_allowlist_by_default(monkeypatch):
     happens to be set to in the real environment's .env (e.g. a live test
     address left configured on a deployed box) — found 2026-09-17 when a
     real .env value leaked into a test run and silently restricted
-    auto-send to an address these tests don't use. Tests that specifically
-    exercise the allowlist set this env var themselves, after this fixture
-    runs, which overrides it as intended."""
-    monkeypatch.delenv("HELPDESK_EMAIL_AUTO_REPLY_TEST_EMAILS", raising=False)
+    auto-send to an address these tests don't use.
+
+    Deliberately setenv("", "") rather than delenv: pydantic-settings reads
+    straight from the .env FILE (env_file=".env" in config.py), so deleting
+    an os.environ var that was never set there in the first place is a
+    no-op — the dotenv-sourced value still wins. An explicit env var,
+    even an empty one, is what actually overrides a dotenv value; this was
+    confirmed live on the deployed VM (whose real .env has this set) after
+    a delenv-based version of this fixture silently failed to fix anything
+    there, despite passing locally where no such .env line exists at all.
+
+    Tests that specifically exercise the allowlist set this env var
+    themselves after this fixture runs, which overrides it as intended."""
+    monkeypatch.setenv("HELPDESK_EMAIL_AUTO_REPLY_TEST_EMAILS", "")
     get_settings.cache_clear()
     yield
     get_settings.cache_clear()
