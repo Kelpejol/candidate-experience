@@ -15,25 +15,30 @@ from app.services.helpdesk_kb_service import GroundingResult
 
 
 @pytest.fixture(autouse=True)
-def _no_test_allowlist_by_default(monkeypatch):
-    """Isolate every test from whatever HELPDESK_EMAIL_AUTO_REPLY_TEST_EMAILS
-    happens to be set to in the real environment's .env (e.g. a live test
-    address left configured on a deployed box) — found 2026-09-17 when a
-    real .env value leaked into a test run and silently restricted
-    auto-send to an address these tests don't use.
+def _known_flag_baseline(monkeypatch):
+    """Force every helpdesk execute-flag this file cares about to a known,
+    off baseline, regardless of what the real deployed environment's .env
+    happens to have live (found 2026-09-17: the deployed VM's real .env has
+    HELPDESK_EMAIL_AUTO_REPLY_TEST_EMAILS and HELPDESK_EMAIL_AUTO_REPLY_EXECUTE
+    both set from real production testing, which silently broke every test
+    that assumed a flag defaults to off — first just the allowlist, then,
+    once that was fixed, the execute flag itself).
 
-    Deliberately setenv("", "") rather than delenv: pydantic-settings reads
-    straight from the .env FILE (env_file=".env" in config.py), so deleting
-    an os.environ var that was never set there in the first place is a
-    no-op — the dotenv-sourced value still wins. An explicit env var,
-    even an empty one, is what actually overrides a dotenv value; this was
-    confirmed live on the deployed VM (whose real .env has this set) after
-    a delenv-based version of this fixture silently failed to fix anything
-    there, despite passing locally where no such .env line exists at all.
+    Deliberately setenv(..., "") / setenv(..., "false") rather than delenv:
+    pydantic-settings reads straight from the .env FILE (env_file=".env" in
+    config.py), so deleting an os.environ var that was never set there in
+    the first place is a no-op — the dotenv-sourced value still wins. An
+    explicit env var, even an empty/false one, is what actually overrides a
+    dotenv value; confirmed live on the deployed VM after a delenv-based
+    version of this fixture silently failed to fix anything there, despite
+    passing locally where no such .env lines exist at all.
 
-    Tests that specifically exercise the allowlist set this env var
-    themselves after this fixture runs, which overrides it as intended."""
+    Tests that specifically exercise a flag set it themselves after this
+    fixture runs, which overrides it as intended."""
     monkeypatch.setenv("HELPDESK_EMAIL_AUTO_REPLY_TEST_EMAILS", "")
+    monkeypatch.setenv("HELPDESK_EMAIL_AUTO_REPLY_EXECUTE", "false")
+    monkeypatch.setenv("HELPDESK_DRAFT_EXECUTE", "false")
+    monkeypatch.setenv("HELPDESK_WHATSAPP_AUTO_REPLY_EXECUTE", "false")
     get_settings.cache_clear()
     yield
     get_settings.cache_clear()
