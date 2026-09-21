@@ -68,6 +68,10 @@ SYSTEM_PROMPT = (
     "if the underlying issue is technical.\n"
     "The campaign/test name usually appears in the subject line — extract it even when "
     "the body doesn't repeat it.\n"
+    "The message may include a labelled recent conversation and OCR excerpts. Classify "
+    "the latest candidate message/request first; use prior officer/candidate messages "
+    "and OCR only as supporting context. If the latest candidate message corrects "
+    "earlier context, the latest candidate message wins.\n"
     "Use confidence_label \"low\" whenever the ticket is ambiguous.\n\n"
     "Respond with ONLY a JSON object — no markdown fences, no explanation — with exactly "
     "these keys: issue_category (string), tool_name (string or null), campaign_name "
@@ -75,25 +79,52 @@ SYSTEM_PROMPT = (
     "(\"high\"|\"medium\"|\"low\"), reason (string, one sentence)."
 )
 
+REPAIR_SYSTEM_PROMPT = (
+    "You repair malformed helpdesk ticket classifications. Convert the provided "
+    "classifier output into exactly one valid JSON object matching this schema: "
+    "issue_category (string), tool_name (string or null), campaign_name "
+    "(string or null), sensitivity_detected (boolean), confidence_label "
+    "(\"high\"|\"medium\"|\"low\"), reason (string). Use the original ticket "
+    "only to resolve missing or invalid fields. Respond with JSON only."
+)
 
-def classify_ticket(subject: str, body: str) -> TicketClassification:
+
+def _post_classification(messages: list[dict[str, str]]) -> str:
     settings = get_settings()
 
     resp = httpx.post(
         f"{settings.inference_base_url}/chat",
         headers={"Authorization": f"Bearer {settings.inference_api_key}"},
         json={
-            "messages": [
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": f"Subject: {subject}\n\nMessage:\n{body}"},
-            ],
+            "messages": messages,
             "max_tokens": 1000,
         },
         timeout=120,
     )
     resp.raise_for_status()
-    output = resp.json()["output"]
-    return parse_classification(output)
+    return resp.json()["output"]
+
+
+def classify_ticket(subject: str, body: str) -> TicketClassification:
+    user_message = f"Subject: {subject}\n\nMessage:\n{body}"
+    output = _post_classification([
+        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "user", "content": user_message},
+    ])
+    try:
+        return parse_classification(output)
+    except ValidationError:
+        repaired = _post_classification([
+            {"role": "system", "content": REPAIR_SYSTEM_PROMPT},
+            {
+                "role": "user",
+                "content": (
+                    f"Subject: {subject}\n\nMessage:\n{body}\n\n"
+                    f"Malformed classifier output:\n{output}"
+                ),
+            },
+        ])
+        return parse_classification(repaired)
 
 
 def parse_classification(output: str) -> TicketClassification:

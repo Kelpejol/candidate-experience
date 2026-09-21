@@ -164,7 +164,16 @@ Key services by domain:
   `helpdesk_kb_service` (grounding) → `helpdesk_draft_service` →
   `helpdesk_executor_service` (Zoho writes), orchestrated by
   `helpdesk_ai_service`; plus `helpdesk_ticket_mirror_service`,
-  `helpdesk_reporting_service`. **Channel-aware**: Email drafts a reply for
+  `helpdesk_reporting_service`. Before classification, `helpdesk_thread_context`
+  builds the actual candidate context from Zoho threads: it ignores our latest
+  outbound reply, normalizes incoming direction variants, strips HTML/quoted
+  email trails, widens email context to the recent conversation, combines short
+  chat/WhatsApp back-and-forth, redacts obvious secrets (passwords/OTPs/BVN/
+  NIN/account/card numbers), and optionally OCRs supported attachments through
+  Azure Document Intelligence Read. OCR is capped per ticket and low-value OCR
+  output is treated as unreadable. If the latest candidate message has no
+  readable text/OCR, the ticket routes to a human instead of guessing.
+  **Channel-aware**: Email drafts a reply for
   an officer to review and send (`action_type: draft_reply`); WhatsApp has no
   draft step — a grounded answer is generated in a shorter, conversational
   tone (`helpdesk_draft_service.generate_whatsapp_reply`) and, if
@@ -199,6 +208,9 @@ Full schema + defaults are in `app/core/config.py`. Groups:
 - **Zoho Desk**: `ZOHO_CLIENT_ID/SECRET/REFRESH_TOKEN`, `ZOHO_ORG_ID`,
   `ZOHO_DEPARTMENT_ID`, `ZOHO_WEBHOOK_TOKEN`.
 - **SharePoint KB reader**: `KB_READER_TENANT_ID/CLIENT_ID/SECRET_VALUE`.
+- **Azure attachment OCR**: `HELPDESK_ATTACHMENT_OCR_ENABLED`,
+  `AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT`, `AZURE_DOCUMENT_INTELLIGENCE_KEY`,
+  `AZURE_DOCUMENT_INTELLIGENCE_API_VERSION`.
 - **KB**: `KB_DIR`, `CHROMA_DIR`, `KB_GROUNDING_THRESHOLD`.
 - **Voice agent**: `VOICE_KB_TOOL_TOKEN` (the bearer the ElevenLabs tools send
   to `/voice-agent/*`), and the LLM proxy — `LLM_GATEWAY_CHAT_URL`,
@@ -284,3 +296,15 @@ change alters any of the following, update the relevant section in the same PR:
 
 Prefer editing over appending, and keep it accurate over exhaustive — a wrong
 instruction is worse than a missing one.
+# Stateful Helpdesk Conversations
+
+The optional LangGraph runtime is implemented behind
+`HELPDESK_CONVERSATION_ENABLED=false`. It persists conversation evidence, asks
+targeted clarifications while useful progress is possible, retrieves tool-scoped
+knowledge, reviews proposed answers and records durable Zoho delivery intents.
+Existing email/WhatsApp/draft/tag execution flags still control external writes.
+
+See [conversation rollout and remaining work](docs/helpdesk-conversation-rollout.md)
+for setup, operator recovery, cue approval requirements, and the outstanding
+historical Q&A/SharePoint knowledge work. The registry starts empty; no historical
+content or inferred campaign mappings are automatically approved.

@@ -1,0 +1,441 @@
+<!doctype html>
+<title>KB Coverage Gaps</title>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,600;9..144,700&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@500&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #FAF7F1;
+    --surface: #FFFFFF;
+    --border: #E4DDCF;
+    --ink: #1D2B4F;
+    --ink-soft: #3B4763;
+    --meta: #6B7186;
+    --accent: #C97C2E;
+    --accent-soft: #F3E3CE;
+    --approve: #3F7A5B;
+    --approve-soft: #E1EEE6;
+    --reject: #A34A3D;
+    --reject-soft: #F4E3E0;
+    --pending: #6B7186;
+    --pending-soft: #ECEAE3;
+    --focus: #1D2B4F;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #171B24;
+      --surface: #20242F;
+      --border: #333A4A;
+      --ink: #F1EFE9;
+      --ink-soft: #D7D9E2;
+      --meta: #9099AE;
+      --accent: #E0A15C;
+      --accent-soft: #3A3020;
+      --approve: #7FC79E;
+      --approve-soft: #1E332A;
+      --reject: #E08579;
+      --reject-soft: #3A2320;
+      --pending: #9099AE;
+      --pending-soft: #2A2E3A;
+      --focus: #E0A15C;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #171B24;
+    --surface: #20242F;
+    --border: #333A4A;
+    --ink: #F1EFE9;
+    --ink-soft: #D7D9E2;
+    --meta: #9099AE;
+    --accent: #E0A15C;
+    --accent-soft: #3A3020;
+    --approve: #7FC79E;
+    --approve-soft: #1E332A;
+    --reject: #E08579;
+    --reject-soft: #3A2320;
+    --pending: #9099AE;
+    --pending-soft: #2A2E3A;
+    --focus: #E0A15C;
+  }
+
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    background: var(--bg);
+    color: var(--ink-soft);
+    font-family: "IBM Plex Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    font-size: 15px;
+    line-height: 1.55;
+    padding-block: env(safe-area-inset-top, 0px) env(safe-area-inset-bottom, 0px);
+  }
+  [hidden] { display: none !important; }
+
+  h1, h2, h3 { font-family: "Fraunces", Georgia, serif; color: var(--ink); text-wrap: balance; }
+
+  .wrap { max-width: 760px; margin: 0 auto; padding-inline: 20px; }
+
+  header.top {
+    position: sticky;
+    top: env(safe-area-inset-top, 0px);
+    z-index: 10;
+    background: var(--bg);
+    border-bottom: 1px solid var(--border);
+    padding-block: 14px;
+  }
+  header.top .wrap { display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
+  header.top h1 { font-size: 1.3rem; font-weight: 600; margin: 0; }
+  header.top .subtitle { font-size: 0.8rem; color: var(--meta); margin-top: 2px; }
+  .progress-pill {
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 0.78rem;
+    font-variant-numeric: tabular-nums;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    padding: 6px 14px;
+    color: var(--ink-soft);
+    white-space: nowrap;
+  }
+  .progress-pill b { color: var(--accent); }
+
+  .intro {
+    padding-block: 24px 8px;
+  }
+  .intro p { margin: 0 0 10px; color: var(--ink-soft); max-width: 62ch; }
+  .intro .callout {
+    background: var(--accent-soft);
+    border: 1px solid var(--accent);
+    border-radius: 10px;
+    padding: 12px 16px;
+    font-size: 0.88rem;
+    color: var(--ink);
+    margin-top: 14px;
+  }
+
+  .filters {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+    padding-block: 16px;
+  }
+  .filters button {
+    font-family: inherit;
+    font-size: 0.78rem;
+    letter-spacing: 0.02em;
+    text-transform: uppercase;
+    border: 1px solid var(--border);
+    background: var(--surface);
+    color: var(--meta);
+    border-radius: 999px;
+    padding: 7px 14px;
+    cursor: pointer;
+  }
+  .filters button.active {
+    background: var(--ink);
+    color: var(--bg);
+    border-color: var(--ink);
+  }
+  .filters button:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+
+  section.category { margin-top: 30px; }
+  section.category > h2 {
+    font-size: 1.1rem;
+    font-weight: 600;
+    margin: 0 0 4px;
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+  }
+  section.category > h2 .count {
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 0.72rem;
+    color: var(--meta);
+    font-weight: 500;
+  }
+  section.category > .cat-rule { height: 1px; background: var(--border); margin: 8px 0 16px; }
+
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-left: 3px solid var(--pending);
+    border-radius: 10px;
+    padding: 16px 18px;
+    margin-bottom: 14px;
+  }
+  .card[data-status="approve"] { border-left-color: var(--approve); }
+  .card[data-status="reject"] { border-left-color: var(--reject); }
+
+  .card .q-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    gap: 12px;
+  }
+  .card h3.question {
+    font-size: 1rem;
+    font-weight: 600;
+    margin: 0;
+    line-height: 1.4;
+    flex: 1;
+  }
+  .badge {
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 0.68rem;
+    font-variant-numeric: tabular-nums;
+    background: var(--pending-soft);
+    color: var(--meta);
+    border-radius: 6px;
+    padding: 3px 8px;
+    white-space: nowrap;
+    flex-shrink: 0;
+  }
+
+  .variants {
+    margin-top: 6px;
+    font-size: 0.8rem;
+    color: var(--meta);
+  }
+  .variants summary { cursor: pointer; }
+
+  .answer-block {
+    margin-top: 12px;
+    background: var(--pending-soft);
+    border-radius: 8px;
+    padding: 10px 14px;
+    font-size: 0.9rem;
+    color: var(--ink-soft);
+    white-space: pre-wrap;
+  }
+  .answer-label {
+    font-size: 0.68rem;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--meta);
+    margin-bottom: 4px;
+    display: block;
+  }
+
+  .review-row {
+    margin-top: 14px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+  .review-row .status-btn {
+    font-family: inherit;
+    font-size: 0.78rem;
+    font-weight: 500;
+    border: 1px solid var(--border);
+    background: var(--surface);
+    color: var(--ink-soft);
+    border-radius: 7px;
+    padding: 6px 12px;
+    cursor: pointer;
+  }
+  .review-row .status-btn[data-kind="approve"].on { background: var(--approve-soft); border-color: var(--approve); color: var(--approve); }
+  .review-row .status-btn[data-kind="reject"].on { background: var(--reject-soft); border-color: var(--reject); color: var(--reject); }
+  .review-row .status-btn:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+
+  .note-field {
+    width: 100%;
+    margin-top: 10px;
+    font-family: inherit;
+    font-size: 0.85rem;
+    color: var(--ink);
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 7px;
+    padding: 8px 10px;
+    resize: vertical;
+    min-height: 34px;
+  }
+  .note-field:focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; }
+  .note-field::placeholder { color: var(--meta); }
+
+  footer {
+    padding-block: 30px 40px;
+    text-align: center;
+    font-size: 0.78rem;
+    color: var(--meta);
+  }
+
+  @media (max-width: 480px) {
+    .wrap { padding-inline: 16px; }
+    header.top .wrap { flex-direction: column; align-items: flex-start; gap: 8px; }
+  }
+</style>
+
+<header class="top">
+  <div class="wrap">
+    <div>
+      <h1>KB Coverage Gaps</h1>
+      <div class="subtitle">38 real, verified-missing topics — from 1,155 historical Zoho tickets tested Sept 16, 2026</div>
+    </div>
+    <div class="progress-pill"><b id="reviewed-count">0</b> / 38 reviewed</div>
+  </div>
+</header>
+
+<div class="wrap">
+  <div class="intro">
+    <p>Each item below is a real candidate question found in past Zoho Desk tickets. The knowledge base was checked live against every one — these are the ones with genuinely <strong>no matching answer</strong> today, confirmed directly, not assumed. Everything already covered (including the reschedule, ticket-follow-up, and next-stage-outcome topics from this morning's update) has already been filtered out.</p>
+    <div class="callout">
+      The "Suggested answer" on each card is drafted by the AI from what a real officer told a candidate historically for that kind of question. It is a starting point, not a final answer — please confirm each one is still accurate and complete before it goes into the KB.
+    </div>
+  </div>
+
+  <div class="filters" role="group" aria-label="Filter by review status">
+    <button type="button" class="active" data-filter="all">All (38)</button>
+    <button type="button" data-filter="pending">Needs review</button>
+    <button type="button" data-filter="approve">Approved</button>
+    <button type="button" data-filter="reject">Rejected</button>
+  </div>
+
+  <div id="categories"></div>
+
+  <footer>Generated from live <code>retrieve_grounding</code> checks against the current knowledge base. Your marks here are saved in this browser only.</footer>
+</div>
+
+<script>
+const DATA = [{"question": "What should I do if my course of study or university is not listed in the scholastica portal while filling out my profile?", "answer": "If your course of study or university is not listed in the scholastica portal, kindly forward your academic details in the sequence below and attach your admission letter: \n   - Name of Institution\n   - Faculty\n   - Department\n   - Discipline\n   - CGPA Scale\nThis information will allow Dragnet Solutions to rectify the issue and update the portal accordingly.", "cluster_size": 2, "variants": ["What should I do if my course of study is not listed among the options on the Scholastica portal, and it leads to incorrect information on my verification form?"], "category": "Scholastica / scholarship application & profile"}, {"question": "What should I do if I encounter issues installing the Talview Secure Browser?", "answer": "Kindly use the Google Chrome browser to download the Talview Secure Browser.", "cluster_size": 2, "variants": ["What should I do if I cannot access the Talview Secure Browser or test links due to errors?"], "category": "Talview Secure Browser & test-technical"}, {"question": "What happens if I upload a selfie photo instead of a valid identification document during the ID verification step?", "answer": "This is not an issue, provided you were able to complete the face capture successfully.", "cluster_size": 2, "variants": ["If I mistakenly upload the wrong document or photo during the identification verification stage of my assessment, will it affect my completed test?"], "category": "Other"}, {"question": "Can I use plain sheets of paper for calculations during the test?", "answer": "Calculators are not allowed during the test. However, you can use a clean sheet of paper and a pen or pencil for calculations.", "cluster_size": 2, "variants": ["Are test candidates allowed to use a plain sheet of paper during their assessments?"], "category": "Test-taking mechanics"}, {"question": "What should I do if my CGPA has not been released yet but is required for a scholarship application?", "answer": "If your CGPA has not been released, you may enter '0.00' as a placeholder for CGPA and upload the required documents with this placeholder value. Once your official CGPA becomes available, you should update your application or profile with the accurate value.", "cluster_size": 1, "variants": [], "category": "Scholastica / scholarship application & profile"}, {"question": "What should I do if the 'Next' button on the test platform is unresponsive or stuck?", "answer": "If the 'Next' button on the test platform becomes unresponsive, it is likely due to an internet connection issue. Exit the page, connect to a reliable and stable internet source, and try again.", "cluster_size": 1, "variants": [], "category": "Talview Secure Browser & test-technical"}, {"question": "I submitted my application for the Julius Berger Nigeria Female Scholarship Scheme, but my actual course of study was not available in the course-selection field. What should I do to clarify this?", "answer": "Kindly forward your academic details in the following sequence along with your admission letter: \n\nNAME OF INSTITUTION:\nFACULTY:\nDEPARTMENT:\nDISCIPLINE:\nCGPA SCALE:\n\nThis will help ensure accurate documentation of your course of study.", "cluster_size": 1, "variants": [], "category": "Scholastica / scholarship application & profile"}, {"question": "Can the CIPM examination be taken on a Chromebook?", "answer": "The CIPM examination cannot be taken on a Chromebook. The examination requires a laptop or desktop running native Windows 10 or above, and there are no alternatives for devices outside these specifications.", "cluster_size": 1, "variants": [], "category": "Talview Secure Browser & test-technical"}, {"question": "What should I do if no interviewer joins my scheduled interview for a recruitment campaign?", "answer": "Dragnet handles the testing aspect of recruitment campaigns but is not responsible for conducting interviews. If you encounter an issue with the interview, we recommend reaching out to the recruiting organization or team responsible for the interview. Dragnet can also escalate the matter to the appropriate team or person in charge if needed.", "cluster_size": 1, "variants": [], "category": "Other"}, {"question": "I am concerned because I have not received my payment for the scholarship cycle, even though others have. What should I do?", "answer": "Kindly be advised that payments for the scholarship verification cycle may take time and can vary across eligible scholars. If payment has not started or if you are eligible, please be patient as payments are made to all qualified beneficiaries.", "cluster_size": 1, "variants": [], "category": "Scholastica / scholarship application & profile"}, {"question": "What should I do if I want to upload multiple result documents, but the system only allows one document at a time?", "answer": "Kindly merge the results into one PDF file and reupload.", "cluster_size": 1, "variants": [], "category": "Test-taking mechanics"}, {"question": "Can I use my next of kin's account number to register since I am underaged?", "answer": "Yes, you can use your next of kin's account details for your registration.", "cluster_size": 1, "variants": [], "category": "Account & general"}, {"question": "What documents do I need to bring for the second-level screening?", "answer": "The documents required for the second-level screening are listed in the test invitation email. Please review the email carefully for specific instructions. Typically, it will require bringing the same valid government-issued identification used during the aptitude test for verification purposes. Certificates, CVs, and other supporting documents may not be required unless explicitly stated in the invitation.", "cluster_size": 1, "variants": [], "category": "Screening & interview logistics"}, {"question": "How and where can I apply for a scholarship?", "answer": "You can visit https://candidate.scholastica.ng/ frequently to inquire about and stay updated on current and future scholarship programs.", "cluster_size": 1, "variants": [], "category": "Scholastica / scholarship application & profile"}, {"question": "Should I delete my previous transcript or signed statement of result before uploading a new academic document for verification?", "answer": "No, you do not need to delete the previous transcript or signed statement of result. Simply select 'Transcript' as the verification document type and upload the new academic result or transcript requested for verification. Ensure that the document is clear, complete, and legible before submitting it.", "cluster_size": 1, "variants": [], "category": "Scholastica / scholarship application & profile"}, {"question": "What CGPA should I provide in my scholarship application if my current CGPA is incomplete due to pending semester results?", "answer": "You should provide the complete CGPA from the most recent fully completed semester that accurately reflects your academic performance. Once your complete results are released, you can update your profile accordingly.\n\nQ: Who should I use as my Academic Referee in a scholarship application?\nA: Your Head of Department (HOD) should be used as your Academic Referee. When using the Scholastica portal, you are required to download your undergraduate profile, have it signed by your HOD, and submit it as part of your application.", "cluster_size": 1, "variants": [], "category": "Scholastica / scholarship application & profile"}, {"question": "Who should be listed as the academic referee for the JBN Scholarship application verification profile?", "answer": "The academic referee for the JBN Scholarship application verification profile is required to be the applicant's Head of Department (HOD). If the academic referee provided is not the HOD, applicants should update their Scholastica profile to reflect their HOD as the academic referee.", "cluster_size": 1, "variants": [], "category": "Scholastica / scholarship application & profile"}, {"question": "Do I need to bring the originals of my credentials to the screening?", "answer": "You are not required to bring the originals of your credentials to the screening. As stated in the invitation, you are to come with only the valid government-issued identification (e.g., National ID, NIN, Driver\u2019s Licence, or International Passport) that was used during the aptitude test for verification purposes.", "cluster_size": 1, "variants": [], "category": "Screening & interview logistics"}, {"question": "Can I request an online interview if I reside outside Nigeria and am unable to attend the physical venue?", "answer": "Unfortunately, the client requires that the test or screening must be completed in person. Online interviews are not currently an option.", "cluster_size": 1, "variants": [], "category": "Screening & interview logistics"}, {"question": "Can I know the specific reasons why I was not shortlisted for a program or scholarship?", "answer": "We regret to inform you that we are unable to provide detailed reasons for non-shortlisting as the selection process is based on fixed eligibility and merit criteria. Outcomes are final and cannot be revisited. We appreciate your participation and encourage you to continue pursuing your academic goals.", "cluster_size": 1, "variants": [], "category": "Scholastica / scholarship application & profile"}, {"question": "What should I do if the Talview Secure Browser is not detecting my microphone during the hardware test?", "answer": "If the Talview Secure Browser is not detecting your microphone during the hardware test, please follow these steps:\n\n1. Exit the Secure Browser, connect to a stable internet source, and relaunch the test link.\n2. Ensure you are using a device with a functioning microphone.\n3. Check that your system volume is high.\n4. During the Hardware Test, speak clearly into the microphone for the full five seconds to allow your audio to be properly detected.\n5. Ensure that all other multimedia applications (e.g., Skype) are closed on your system.\n6. Make sure you have a fast and stable internet connection.\n\nIf the issue persists, it may indicate a hardware problem, and you are advised to switch to a different device.", "cluster_size": 1, "variants": [], "category": "Talview Secure Browser & test-technical"}, {"question": "What should I do if I don't have a school ID for my application?", "answer": "If your school ID is not yet issued, you can upload your Admission Letter instead. Update your school ID in the system once it becomes available.\n\nQ: Can I proceed with my application if I don't have my WAEC certificate yet?\nA: The officer's answer doesn't directly address this case, so please verify current policies regarding WAEC certificates with Dragnet Solutions support.", "cluster_size": 1, "variants": [], "category": "Scholastica / scholarship application & profile"}, {"question": "How do I renew my Julius Berger Female Scholarship award?", "answer": "To renew your Julius Berger Female Scholarship award, you need to upload your current school results on the Scholastica portal and ensure that you maintain a minimum CGPA of 3.0.", "cluster_size": 1, "variants": [], "category": "Scholastica / scholarship application & profile"}, {"question": "How can I delete my account if I no longer wish to use it?", "answer": "Currently, account deletion is unavailable due to a system glitch. If you no longer wish to use your account, we recommend that you refrain from applying to any job opportunities.", "cluster_size": 1, "variants": [], "category": "Account & general"}, {"question": "Will receiving additional educational financial assistance, such as a student loan, bursary, or sponsorship, affect my eligibility for the OML17 HCDT Scholarship?", "answer": "You may apply for any other financial support or assistance you require to support your education. The requirement to remain an awardee of the OML17 HCDT Scholarship is that you remain a student in school and continue your studies.", "cluster_size": 1, "variants": [], "category": "Scholastica / scholarship application & profile"}, {"question": "What measures are in place to detect cheating during assessments?", "answer": "Appropriate measures have been put in place to detect cheating and other suspicious behaviors during the assessment process. We appreciate your vigilance and encourage candidates to report any concerns about exam integrity to us.", "cluster_size": 1, "variants": [], "category": "Account & general"}, {"question": "Can I use an Android device or the Talview Secure Browser App to take my test?", "answer": "The version of the browser being used for tests requires a laptop or desktop device running native Windows 10 or above. Alternative devices, such as Android, are not supported.", "cluster_size": 1, "variants": [], "category": "Talview Secure Browser & test-technical"}, {"question": "What should I do if my secure browser is loading but not opening the test page?", "answer": "If your secure browser is loading without opening the test page, it may be due to slow Internet connectivity. Unfortunately, if the test time elapses, there is no provision for rescheduling at the moment. Ensure you have stable and fast Internet before attempting to take your assessment.", "cluster_size": 1, "variants": [], "category": "Talview Secure Browser & test-technical"}, {"question": "What should I do if I encounter the \"Restricted Software Detected\" error during my test due to an application like Anydesk?", "answer": "If you encounter the \"Restricted Software Detected\" error during your test, try the following steps:\n1. Use your Task Manager to disable the detected application (e.g., Anydesk) for the duration of the test.\n2. Uninstall any antivirus software or disable Windows Defender on your device temporarily, as they may interfere with the secure browser's functionality.\nEnsure no other applications are running that might conflict with the secure browser. Restarting your system after these steps may also help resolve the issue.", "cluster_size": 1, "variants": [], "category": "Talview Secure Browser & test-technical"}, {"question": "I am having difficulty with the hardware test (audio) during the test setup. What should I do?", "answer": "Please ensure the following steps to resolve the issue:\n1. Verify that your computer does not have any hardware issues and that all multimedia applications like Skype are closed.\n2. Make sure your system volume is set to a high level.\n3. During the hardware test, speak clearly into the microphone for the full five seconds until your audio is fully detected.\n4. Make sure you have a fast and stable internet connection.\nIf the issue persists, it may be a hardware problem, and you are advised to change the device.", "cluster_size": 1, "variants": [], "category": "Talview Secure Browser & test-technical"}, {"question": "What should I do if the secure browser download link is not working?", "answer": "If the secure browser download link is not working, kindly take a screenshot of the page and send it to us so we can assist you in resolving the issue. Please ensure your message is specific.", "cluster_size": 1, "variants": [], "category": "Talview Secure Browser & test-technical"}, {"question": "What should I do if I do not have access to the test platform?", "answer": "You might not be on the correct platform. Copy and paste the complete test link into an updated Chrome or Firefox browser. It should navigate to the secure browser automatically. Ensure you copy the link starting from 'sb.'.", "cluster_size": 1, "variants": [], "category": "Talview Secure Browser & test-technical"}, {"question": "What can I do if I am experiencing network issues in my area?", "answer": "Kindly switch to a stable network.", "cluster_size": 1, "variants": [], "category": "Talview Secure Browser & test-technical"}, {"question": "What should I do if my exam software gets blocked by Microsoft Windows Smart App Control?", "answer": "If you encounter a Microsoft Windows Smart App Control warning stating that the examination software (e.g., Secure Browser.exe) has been blocked due to an unverifiable publisher, you should try using a different device to access the examination. Please note that there is no provision for rescheduling the test, but if the test is considered for rescheduling, you will be contacted.", "cluster_size": 1, "variants": [], "category": "Talview Secure Browser & test-technical"}, {"question": "What system requirements are needed for running the Talvie browser?", "answer": "The version of the Talvie browser requires a laptop or desktop device running native Windows 10 or above. There is no alternative for systems running older versions of Windows.", "cluster_size": 1, "variants": [], "category": "Talview Secure Browser & test-technical"}, {"question": "Can the Exxon aptitude test be taken on a mobile phone, and what are the test schedule details?", "answer": "The version of the Secure Browser required for the Exxon test only supports laptop or desktop devices running native Windows 10 or above; mobile phones cannot be used. The test invitation email will contain the access link and relevant details. The test window is typically open within a specified timeframe, such as 10:00 AM to 2:00 PM; check your email for your specific test time.", "cluster_size": 1, "variants": [], "category": "Talview Secure Browser & test-technical"}, {"question": "Can I use an external keyboard or external headphones for the assessment if my laptop's keyboard or microphone is not functional?", "answer": "You are advised to use a system with a functional camera, microphone, and keyboard for the assessment. If using an external keyboard, ensure it works with the Secure Browser by testing it during the practice test. External headphones are generally not advised as the microphone on the system must be functional.", "cluster_size": 1, "variants": [], "category": "Talview Secure Browser & test-technical"}, {"question": "Can I use an Android phone to take the test?", "answer": "No, the test requires a laptop/desktop device running native Windows 10 or above. Using an Android phone is not supported.", "cluster_size": 1, "variants": [], "category": "Talview Secure Browser & test-technical"}];
+
+const CATEGORY_ORDER = [
+  "Talview Secure Browser & test-technical",
+  "Scholastica / scholarship application & profile",
+  "Screening & interview logistics",
+  "Test-taking mechanics",
+  "Account & general",
+  "Other",
+];
+
+function slug(q) {
+  let h = 0;
+  for (let i = 0; i < q.length; i++) { h = (h * 31 + q.charCodeAt(i)) | 0; }
+  return 'kbgap-' + Math.abs(h);
+}
+
+function loadState() {
+  try {
+    return JSON.parse(localStorage.getItem('kbGapReviewState') || '{}');
+  } catch (e) { return {}; }
+}
+function saveState(state) {
+  try { localStorage.setItem('kbGapReviewState', JSON.stringify(state)); } catch (e) {}
+}
+
+let state = loadState();
+let activeFilter = 'all';
+
+function updateProgress() {
+  const reviewed = DATA.filter(d => {
+    const s = state[slug(d.question)];
+    return s && (s.status === 'approve' || s.status === 'reject');
+  }).length;
+  document.getElementById('reviewed-count').textContent = reviewed;
+}
+
+function applyFilter() {
+  document.querySelectorAll('.card').forEach(card => {
+    const id = card.dataset.id;
+    const s = (state[id] && state[id].status) || 'pending';
+    card.hidden = activeFilter !== 'all' && s !== activeFilter;
+  });
+  document.querySelectorAll('section.category').forEach(sec => {
+    const visible = Array.from(sec.querySelectorAll('.card')).some(c => !c.hidden);
+    sec.hidden = !visible;
+  });
+}
+
+function render() {
+  const grouped = {};
+  DATA.forEach(d => {
+    (grouped[d.category] = grouped[d.category] || []).push(d);
+  });
+
+  const root = document.getElementById('categories');
+  root.innerHTML = '';
+
+  CATEGORY_ORDER.forEach(cat => {
+    const items = grouped[cat];
+    if (!items || !items.length) return;
+
+    const section = document.createElement('section');
+    section.className = 'category';
+    section.innerHTML = `<h2>${cat} <span class="count">${items.length}</span></h2><div class="cat-rule"></div>`;
+
+    items.sort((a, b) => b.cluster_size - a.cluster_size);
+
+    items.forEach(d => {
+      const id = slug(d.question);
+      const s = state[id] || { status: 'pending', note: '' };
+      const card = document.createElement('div');
+      card.className = 'card';
+      card.dataset.id = id;
+      card.dataset.status = s.status;
+
+      const variantsHtml = d.variants && d.variants.length
+        ? `<details class="variants"><summary>${d.variants.length} similar phrasing${d.variants.length > 1 ? 's' : ''} seen</summary>${d.variants.map(v => `<div>&mdash; ${v}</div>`).join('')}</details>`
+        : '';
+
+      const badge = d.cluster_size > 1 ? `<span class="badge">asked ${d.cluster_size}&times;</span>` : `<span class="badge">asked once</span>`;
+
+      card.innerHTML = `
+        <div class="q-row">
+          <h3 class="question">${d.question}</h3>
+          ${badge}
+        </div>
+        ${variantsHtml}
+        <div class="answer-block"><span class="answer-label">Suggested answer</span>${d.answer}</div>
+        <div class="review-row">
+          <button type="button" class="status-btn" data-kind="approve">Approve</button>
+          <button type="button" class="status-btn" data-kind="reject">Reject</button>
+        </div>
+        <textarea class="note-field" id="${id}-note" placeholder="Notes for the dev team (optional)">${s.note || ''}</textarea>
+      `;
+
+      const approveBtn = card.querySelector('[data-kind="approve"]');
+      const rejectBtn = card.querySelector('[data-kind="reject"]');
+      const noteField = card.querySelector('textarea');
+
+      function refreshButtons() {
+        approveBtn.classList.toggle('on', s.status === 'approve');
+        rejectBtn.classList.toggle('on', s.status === 'reject');
+        card.dataset.status = s.status;
+      }
+      refreshButtons();
+
+      approveBtn.addEventListener('click', () => {
+        s.status = s.status === 'approve' ? 'pending' : 'approve';
+        state[id] = s; saveState(state); refreshButtons(); updateProgress(); applyFilter();
+      });
+      rejectBtn.addEventListener('click', () => {
+        s.status = s.status === 'reject' ? 'pending' : 'reject';
+        state[id] = s; saveState(state); refreshButtons(); updateProgress(); applyFilter();
+      });
+      noteField.addEventListener('input', (e) => {
+        s.note = e.target.value; state[id] = s; saveState(state);
+      });
+
+      section.appendChild(card);
+    });
+
+    root.appendChild(section);
+  });
+
+  updateProgress();
+  applyFilter();
+}
+
+document.querySelectorAll('.filters button').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('.filters button').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    activeFilter = btn.dataset.filter;
+    applyFilter();
+  });
+});
+
+render();
+</script>

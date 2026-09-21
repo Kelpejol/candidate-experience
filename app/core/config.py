@@ -71,6 +71,11 @@ class Settings(BaseSettings):
 
       # Address drafts are written from (discovered from real outbound threads).
       helpdesk_from_email: str = "invitation@dragnet-solutions.com"
+      helpdesk_conversation_enabled: bool = False
+      helpdesk_checkpoint_path: str = "./data/helpdesk-checkpoints.sqlite"
+      helpdesk_cue_registry_path: str = "./config/helpdesk-cues.json"
+      helpdesk_conversation_context_messages: int = 20
+      helpdesk_automation_assignee_ids: str = ""
       # Safety flag: False = generate drafts into our audit log only.
       # True = also place them on Zoho tickets (officers will see them).
       helpdesk_draft_execute: bool = False
@@ -175,6 +180,14 @@ class Settings(BaseSettings):
       # sites only have one, but this site's KB lives in its own, so this
       # must be set for it to resolve to the right library, not an empty one.
       sharepoint_library_name: str | None = None
+
+      # Azure Document Intelligence Read OCR for candidate attachments
+      # (screenshots, PDFs, scanned documents) on Helpdesk tickets. When unset,
+      # attachments are noted in the AI context but never guessed from.
+      azure_document_intelligence_endpoint: str | None = None
+      azure_document_intelligence_key: str | None = None
+      azure_document_intelligence_api_version: str = "2024-11-30"
+      helpdesk_attachment_ocr_enabled: bool = False
 
 
       redis_url: str = "redis://localhost:6379/0"

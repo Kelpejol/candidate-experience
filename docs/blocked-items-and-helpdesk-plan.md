@@ -1477,15 +1477,40 @@ explicitly, which correctly overrides the fixture.
 **Confirmed working, not a bug**: a real human officer picked up the
 negative-sentiment-escalated test ticket and asked a clarifying question
 ("which assessment are you taking?") — something our AI cannot currently do.
-Checked the actual code: `get_latest_candidate_message` only ever fetches
+Checked the actual code: `get_latest_candidate_message` only ever fetched
 the single newest incoming message: no prior thread history (including an
-officer's own earlier clarifying question) is passed to classification or
-generation. `decide_ticket_action` has exactly two outcomes — answer from
-the KB, or escalate — with no "ask for clarification" path. Explicitly
-deferred past Friday, by choice: multi-turn conversations are rare relative
-to first-contact questions, and the current failure mode is safe (escalates
-rather than guesses wrong) rather than harmful. If revisited, the smallest
-safe version is widening context to the last 2-3 thread messages (better
-read comprehension of an existing reply) without adding the ability to ask
-its own follow-up questions (a materially bigger feature: new action type,
-new safety review, likely still human-in-the-loop given the trust step).
+officer's own earlier clarifying question) was passed to classification or
+generation. `decide_ticket_action` still has exactly two outcomes — answer
+from the KB, or escalate — with no "ask for clarification" path.
+
+**Update (2026-09-19): smallest safe version implemented.** New
+`app/services/helpdesk_thread_context.py` builds the candidate context before
+classification: it normalizes incoming direction values (`in`, `incoming`,
+`Inbound`), ignores our latest outbound reply, strips HTML/entities and common
+email quote trails, includes the recent email conversation so follow-up
+answers can be understood in context, and includes the recent back-and-forth
+for conversational channels (`WhatsApp`, `Chat`, `IM`) so a burst like
+"hello" → "I can't login" → "see screenshot" and a clarifying officer
+question like "Which test?" are not reduced to only the latest short reply.
+It also prepares supported attachments for optional OCR through Azure
+Document Intelligence Read (`prebuilt-read`); if OCR is not configured,
+fails, returns low-value text, or there are too many OCR-supported
+attachments, the attachment is noted and an attachment-only message routes
+to a human rather than being guessed from. Obvious secrets in message/OCR
+text (passwords, OTPs, BVN/NIN, account/card numbers) are redacted before
+LLM calls. This deliberately does **not** add an AI "ask a follow-up
+question" action; that remains a bigger product/safety feature.
+
+**Update (2026-09-19): Phase 4 classifier/decision edge cases tightened.**
+Explicit "speak to a human/person/agent" requests now escalate on every
+channel, not only WhatsApp. The classifier now gets one repair retry when it
+returns malformed JSON, then still falls back to `classifier_unparseable` if
+the repaired output is invalid. Medium-confidence draftable tickets must now
+have stronger KB grounding (`best_distance <= 0.32`) before a reply can be
+drafted/sent; otherwise they route to a human with
+`medium_confidence_needs_strong_grounding`. Short, clear acknowledgements
+like "thanks", "noted", or "received" become `tag_only` without a reply, but
+messages that include a question/problem marker still proceed through the
+normal decision path. Deliberately deferred: wrong-but-valid `tool_name` or
+`campaign_name` extraction, because that belongs to the next KB scoping phase
+rather than the classifier gate alone.

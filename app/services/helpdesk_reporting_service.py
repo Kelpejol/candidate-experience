@@ -108,7 +108,8 @@ def get_helpdesk_summary(session: Session) -> dict:
     )
 
     total = len(actions)
-    automation_rate = round((action_counts.get("draft_reply", 0) + action_counts.get("tag_only", 0)) / total, 3) if total else 0.0
+    automated_actions = {"draft_reply", "auto_reply", "ask_clarification", "request_attachment", "tag_only"}
+    automation_rate = round(sum(action_counts.get(a, 0) for a in automated_actions) / total, 3) if total else 0.0
 
     # Per-category action mix — which categories the AI actually handles vs
     # routes away, the evidence base for later auto-send promotion (plan step 8).

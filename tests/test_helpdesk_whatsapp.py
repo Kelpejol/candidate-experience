@@ -10,9 +10,10 @@ import pytest
 from app.core.config import get_settings
 from app.models.helpdesk_ticket_mirror import HelpdeskTicketMirror
 from app.services import helpdesk_ai_service
-from app.services.helpdesk_ai_service import process_ticket
+from app.services.helpdesk_ai_service import is_conversational_channel, process_ticket
 from app.services.helpdesk_decision import detect_human_request
 from app.services.helpdesk_kb_service import GroundingResult
+from app.services.helpdesk_thread_context import ThreadContext
 
 
 def _mirror(channel="WhatsApp", **overrides):
@@ -50,8 +51,16 @@ class _FakeZohoClient:
 
 def _patch_common(monkeypatch, *, grounded=True, chunks=None):
     monkeypatch.setattr(
-        helpdesk_ai_service, "get_latest_candidate_message",
-        lambda client, tid: "I can't get my test page to load",
+        helpdesk_ai_service,
+        "build_thread_context",
+        lambda client, tid, conversational=False: ThreadContext(
+            text="I can't get my test page to load",
+            latest_candidate_text="I can't get my test page to load",
+            has_readable_candidate_content=True,
+            has_attachments=False,
+            attachment_notes=[],
+            selected_thread_ids=["thread-1"],
+        ),
     )
     monkeypatch.setattr(
         helpdesk_ai_service, "classify_ticket", lambda subject, body: _Classification(),
@@ -87,6 +96,18 @@ def test_detect_human_request_no_match_on_ordinary_question():
     assert detect_human_request("My test page won't load, please help") is None
 
 
+# --- channel normalization ---------------------------------------------------
+
+@pytest.mark.parametrize("channel", ["WhatsApp", "whatsapp", "WhatsApp Business", "Chat", "IM"])
+def test_conversational_channel_variants_are_normalized(channel):
+    assert is_conversational_channel(channel) is True
+
+
+@pytest.mark.parametrize("channel", ["Email", "Phone", None, ""])
+def test_non_conversational_channels_do_not_use_whatsapp_path(channel):
+    assert is_conversational_channel(channel) is False
+
+
 # --- process_ticket: WhatsApp branch -----------------------------------------
 
 def test_whatsapp_candidate_asking_for_human_escalates_before_generation(
@@ -104,8 +125,16 @@ def test_whatsapp_candidate_asking_for_human_escalates_before_generation(
         lambda **k: (_ for _ in ()).throw(AssertionError("must not generate")),
     )
     monkeypatch.setattr(
-        helpdesk_ai_service, "get_latest_candidate_message",
-        lambda client, tid: "please connect me to a human agent",
+        helpdesk_ai_service,
+        "build_thread_context",
+        lambda client, tid, conversational=False: ThreadContext(
+            text="please connect me to a human agent",
+            latest_candidate_text="please connect me to a human agent",
+            has_readable_candidate_content=True,
+            has_attachments=False,
+            attachment_notes=[],
+            selected_thread_ids=["thread-1"],
+        ),
     )
 
     action = process_ticket(session, _FakeZohoClient(), mirror)
@@ -171,6 +200,36 @@ def test_whatsapp_grounded_answer_not_sent_when_flag_off(session, monkeypatch):
     get_settings.cache_clear()
 
 
+def test_chat_channel_uses_conversational_reply_path(session, monkeypatch):
+    """Zoho can surface social/WhatsApp-style conversations as Chat; those
+    must not fall into the formal email draft path."""
+    monkeypatch.setenv("HELPDESK_WHATSAPP_AUTO_REPLY_EXECUTE", "false")
+    get_settings.cache_clear()
+
+    mirror = _mirror(channel="Chat")
+    session.add(mirror)
+    session.commit()
+
+    _patch_common(monkeypatch, grounded=True)
+    monkeypatch.setattr(
+        helpdesk_ai_service, "generate_whatsapp_reply",
+        lambda **k: "Try a different browser.",
+    )
+    monkeypatch.setattr(
+        helpdesk_ai_service, "generate_draft_reply",
+        lambda **k: (_ for _ in ()).throw(AssertionError("must not use email generator")),
+    )
+    zoho_client = _FakeZohoClient()
+
+    action = process_ticket(session, zoho_client, mirror)
+
+    assert action.action_type == "auto_reply"
+    assert action.draft_text == "Try a different browser."
+    assert zoho_client.drafts_created == []
+
+    get_settings.cache_clear()
+
+
 def test_whatsapp_ungrounded_question_escalates(session, monkeypatch):
     mirror = _mirror()
     session.add(mirror)
@@ -194,8 +253,16 @@ def test_whatsapp_escalation_reasons_still_apply(session, monkeypatch):
 
     _patch_common(monkeypatch)
     monkeypatch.setattr(
-        helpdesk_ai_service, "get_latest_candidate_message",
-        lambda client, tid: "not relevant",
+        helpdesk_ai_service,
+        "build_thread_context",
+        lambda client, tid, conversational=False: ThreadContext(
+            text="not relevant",
+            latest_candidate_text="not relevant",
+            has_readable_candidate_content=True,
+            has_attachments=False,
+            attachment_notes=[],
+            selected_thread_ids=["thread-1"],
+        ),
     )
     zoho_client = _FakeZohoClient()
 
@@ -209,7 +276,7 @@ def test_whatsapp_escalation_reasons_still_apply(session, monkeypatch):
 def test_email_channel_is_completely_unaffected(session, monkeypatch):
     """A plain Email ticket must still use the draft path, never the
     WhatsApp one — regression guard for the channel branch."""
-    mirror = _mirror(channel="Email")
+    mirror = _mirror(channel="Email", candidate_email="ada@example.com")
     session.add(mirror)
     session.commit()
 

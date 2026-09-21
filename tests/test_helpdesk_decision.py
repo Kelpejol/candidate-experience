@@ -1,5 +1,10 @@
+import pytest
+
 from app.services.helpdesk_classifier import TicketClassification
-from app.services.helpdesk_decision import decide_ticket_action
+from app.services.helpdesk_decision import (
+    decide_ticket_action,
+    detect_simple_acknowledgement,
+)
 
 
 def make(category="technical_issue", sensitive=False, confidence="high"):
@@ -31,6 +36,37 @@ def test_confirmation_is_tag_only():
 
 def test_medium_confidence_confirmation_still_gets_drafted_not_ignored():
     decision = decide_ticket_action(make(category="availability_confirmation", confidence="medium"))
+    assert decision.action == "draft_reply"
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "Thanks",
+        "thank you",
+        "Received",
+        "Well received",
+        "Noted, thank you",
+        "I acknowledge",
+    ],
+)
+def test_simple_acknowledgement_is_tag_only(body):
+    decision = decide_ticket_action(make(category="general_enquiry"), body=body)
+    assert decision.action == "tag_only"
+    assert decision.rule == "simple_acknowledgement_no_reply_needed"
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "Thanks, but I still cannot access the test",
+        "Received, please how do I reschedule?",
+        "Okay I have an issue with my login",
+    ],
+)
+def test_acknowledgement_with_a_question_or_issue_is_not_tag_only(body):
+    assert detect_simple_acknowledgement(body) is None
+    decision = decide_ticket_action(make(category="technical_issue"), body=body)
     assert decision.action == "draft_reply"
 
 
@@ -118,6 +154,31 @@ def test_ungrounded_draft_flips_to_human():
     assert decision.action == "route_to_human"
     assert decision.rule == "kb_grounding_missing"
     assert status == "missing"
+
+
+def test_medium_confidence_draft_needs_stronger_grounding():
+    from app.services.helpdesk_ai_service import apply_grounding_gate
+    from app.services.helpdesk_kb_service import GroundingResult
+
+    draft = decide_ticket_action(make(category="technical_issue", confidence="medium"))
+    grounding = GroundingResult(grounded=True, best_distance=0.35, chunks=[{"text": "x"}])
+
+    decision, status = apply_grounding_gate(draft, grounding, confidence_label="medium")
+    assert decision.action == "route_to_human"
+    assert decision.rule == "medium_confidence_needs_strong_grounding"
+    assert status == "weak"
+
+
+def test_high_confidence_draft_accepts_normal_grounding_threshold():
+    from app.services.helpdesk_ai_service import apply_grounding_gate
+    from app.services.helpdesk_kb_service import GroundingResult
+
+    draft = decide_ticket_action(make(category="technical_issue", confidence="high"))
+    grounding = GroundingResult(grounded=True, best_distance=0.35, chunks=[{"text": "x"}])
+
+    decision, status = apply_grounding_gate(draft, grounding, confidence_label="high")
+    assert decision.action == "draft_reply"
+    assert status == "grounded"
 
 
 def test_unavailable_kb_counts_as_ungrounded():

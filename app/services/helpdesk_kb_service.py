@@ -152,7 +152,8 @@ def retrieve_grounding(
     )
 
     chunks = [
-        {"text": doc, "source": meta["source"], "heading": meta["heading"], "distance": distance}
+        {"text": doc, "source": meta["source"], "heading": meta["heading"], "distance": distance,
+         "scope": meta.get("scope")}
         for doc, meta, distance in zip(
             result["documents"][0], result["metadatas"][0], result["distances"][0]
         )

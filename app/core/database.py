@@ -14,6 +14,7 @@ from app.models.campaign_candidate import CampaignCandidate
 from app.models.outbound_call_attempt import OutboundCallAttempt
 from app.models.helpdesk_ticket_mirror import HelpdeskTicketMirror
 from app.models.helpdesk_ai_action import HelpdeskAIAction
+from app.models.helpdesk_conversation_turn import HelpdeskConversationTurn
 from app.models.csat_invitation import CsatInvitation
 from app.models.collected_datum import CollectedDatum
 from app.models.outbound_survey_answer import OutboundSurveyAnswer

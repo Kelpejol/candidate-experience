@@ -12,9 +12,12 @@ import type { HelpdeskAIActionRead, HelpdeskSummary } from "../lib/types";
 // Palette (validated via the dataviz skill's validator, light mode):
 // - Action mix = categorical identity (3 hues, fixed order, legend + counts).
 // - Magnitude bars = single sequential hue (blue); identity is on the label.
-const ACTION_ORDER = ["draft_reply", "route_to_human", "tag_only"];
+const ACTION_ORDER = ["auto_reply", "draft_reply", "ask_clarification", "request_attachment", "route_to_human", "tag_only"];
 const ACTION_COLORS: Record<string, string> = {
   draft_reply: "#2a78d6",
+  auto_reply: "#087f8c",
+  ask_clarification: "#a26800",
+  request_attachment: "#6958a8",
   route_to_human: "#008300",
   tag_only: "#e87ba4",
 };
@@ -172,6 +175,9 @@ type ActionParams = {
 
 const ACTION_TONE: Record<string, "blue" | "green" | "gray"> = {
   draft_reply: "blue",
+  auto_reply: "green",
+  ask_clarification: "blue",
+  request_attachment: "blue",
   route_to_human: "green",
   tag_only: "gray",
 };
@@ -179,6 +185,8 @@ const ACTION_TONE: Record<string, "blue" | "green" | "gray"> = {
 const DECISION_FILTERS: { key: string; label: string; params: ActionParams }[] = [
   { key: "all", label: "All", params: { limit: 100 } },
   { key: "drafts", label: "Drafts", params: { only_drafts: true, limit: 100 } },
+  { key: "clarifications", label: "Clarifications", params: { action_type: "ask_clarification", limit: 100 } },
+  { key: "attachments", label: "Attachment Requests", params: { action_type: "request_attachment", limit: 100 } },
   { key: "routed", label: "Routed", params: { action_type: "route_to_human", limit: 100 } },
   { key: "tagged", label: "Tagged", params: { action_type: "tag_only", limit: 100 } },
 ];

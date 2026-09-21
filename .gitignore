@@ -4,6 +4,7 @@ __pycache__/
 
 .env
 chroma_data/
+data/
 .DS_Store
 
 # Kortex

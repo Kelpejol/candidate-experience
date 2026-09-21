@@ -14,6 +14,7 @@ from app.models.helpdesk_ai_action import HelpdeskAIAction
 from app.models.helpdesk_ticket_mirror import HelpdeskTicketMirror
 from app.services import helpdesk_ai_service
 from app.services.helpdesk_ai_service import process_pending_tickets
+from app.services.helpdesk_thread_context import ThreadContext
 
 
 def _mirror(ticket_id):
@@ -76,6 +77,48 @@ def test_failure_rolls_back_only_the_failing_ticket(session, monkeypatch):
     assert session.exec(select(HelpdeskAIAction)).all() == []
 
 
+class _FakeTicketLock:
+    def __init__(self, locked_ids=None):
+        self.locked_ids = set(locked_ids or [])
+        self.released = []
+
+    def acquire(self, zoho_ticket_id):
+        if zoho_ticket_id in self.locked_ids:
+            return None
+        return f"token-{zoho_ticket_id}"
+
+    def release(self, zoho_ticket_id, token):
+        self.released.append((zoho_ticket_id, token))
+
+
+def test_locked_ticket_is_skipped_without_processing(session, monkeypatch):
+    for tid in ("t1", "t2"):
+        session.add(_mirror(tid))
+    session.commit()
+
+    processed = []
+
+    def fake_process(sess, client, mirror):
+        processed.append(mirror.zoho_ticket_id)
+        action = HelpdeskAIAction(
+            zoho_ticket_id=mirror.zoho_ticket_id,
+            action_type="draft_reply",
+            rule="answerable_draft_first",
+        )
+        sess.add(action)
+        return action
+
+    monkeypatch.setattr(helpdesk_ai_service, "process_ticket", fake_process)
+    lock = _FakeTicketLock(locked_ids={"t1"})
+
+    tally = process_pending_tickets(session, zoho_client=object(), ticket_lock=lock)
+
+    assert tally["skipped_locked"] == 1
+    assert tally["draft_reply"] == 1
+    assert processed == ["t2"]
+    assert lock.released == [("t2", "token-t2")]
+
+
 def test_draft_gateway_failure_escalates_with_an_honest_reason(session, monkeypatch):
     """A gateway outage must route to a human — and must not be recorded as
     'the KB was insufficient', which officers triage completely differently."""
@@ -86,8 +129,16 @@ def test_draft_gateway_failure_escalates_with_an_honest_reason(session, monkeypa
     session.commit()
 
     monkeypatch.setattr(
-        helpdesk_ai_service, "get_latest_candidate_message",
-        lambda client, tid: "I cannot start my test",
+        helpdesk_ai_service,
+        "build_thread_context",
+        lambda client, tid, conversational=False: ThreadContext(
+            text="I cannot start my test",
+            latest_candidate_text="I cannot start my test",
+            has_readable_candidate_content=True,
+            has_attachments=False,
+            attachment_notes=[],
+            selected_thread_ids=["thread-1"],
+        ),
     )
     monkeypatch.setattr(
         helpdesk_ai_service, "classify_ticket",
@@ -107,7 +158,7 @@ def test_draft_gateway_failure_escalates_with_an_honest_reason(session, monkeypa
     )
     monkeypatch.setattr(
         helpdesk_ai_service, "apply_grounding_gate",
-        lambda decision, grounding: (decision, "grounded"),
+        lambda decision, grounding, confidence_label=None: (decision, "grounded"),
     )
     # The gateway is down.
     def boom(**kwargs):
@@ -136,8 +187,16 @@ def test_unparseable_classification_routes_to_a_human_instead_of_looping_forever
     session.commit()
 
     monkeypatch.setattr(
-        helpdesk_ai_service, "get_latest_candidate_message",
-        lambda client, tid: "some message",
+        helpdesk_ai_service,
+        "build_thread_context",
+        lambda client, tid, conversational=False: ThreadContext(
+            text="some message",
+            latest_candidate_text="some message",
+            has_readable_candidate_content=True,
+            has_attachments=False,
+            attachment_notes=[],
+            selected_thread_ids=["thread-1"],
+        ),
     )
 
     def boom(**kwargs):
@@ -156,6 +215,40 @@ def test_unparseable_classification_routes_to_a_human_instead_of_looping_forever
     from app.services.helpdesk_ai_service import find_pending_tickets
     session.commit()
     assert find_pending_tickets(session) == []
+
+
+def test_empty_or_unreadable_thread_routes_to_human_before_classification(
+    session, monkeypatch
+):
+    mirror = _mirror("t1")
+    session.add(mirror)
+    session.commit()
+
+    monkeypatch.setattr(
+        helpdesk_ai_service,
+        "build_thread_context",
+        lambda client, tid, conversational=False: ThreadContext(
+            text="[Attachment: screenshot.png] OCR not configured",
+            latest_candidate_text="",
+            has_readable_candidate_content=False,
+            has_attachments=True,
+            attachment_notes=["[Attachment: screenshot.png] OCR not configured"],
+            selected_thread_ids=["thread-1"],
+        ),
+    )
+    monkeypatch.setattr(
+        helpdesk_ai_service,
+        "classify_ticket",
+        lambda **kwargs: (_ for _ in ()).throw(AssertionError("must not classify")),
+    )
+    monkeypatch.setattr(
+        helpdesk_ai_service, "execute_ticket_action", lambda *a, **k: False
+    )
+
+    action = helpdesk_ai_service.process_ticket(session, object(), mirror)
+
+    assert action.action_type == "route_to_human"
+    assert action.rule == "empty_or_unreadable_candidate_message"
 
 
 class _classification:

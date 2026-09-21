@@ -13,15 +13,22 @@ Run with: python scripts/enqueue_helpdesk_pipeline_job.py
 """
 
 from app.core.queue import get_default_queue
+from app.core.redis import get_redis_connection
 from app.jobs.helpdesk_ai_jobs import run_helpdesk_pipeline_job
+from app.services.job_queue_service import enqueue_unique_active_job, get_job_status_value
 
 
 queue = get_default_queue()
-job = queue.enqueue(
-    run_helpdesk_pipeline_job,
-    job_timeout=900,   # classification + drafting per ticket can add up
+redis_connection = get_redis_connection()
+job = enqueue_unique_active_job(
+    queue=queue,
+    redis_connection=redis_connection,
+    lock_key="helpdesk:pipeline:scheduled-job",
+    func=run_helpdesk_pipeline_job,
+    job_timeout=900,    # classification + drafting per ticket can add up
     result_ttl=3600,
+    lock_ttl=900,
 )
 
 print(f"Queued helpdesk pipeline job: {job.id}")
-print(f"Status: {job.get_status()}")
+print(f"Status: {get_job_status_value(job)}")

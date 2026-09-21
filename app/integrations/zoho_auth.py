@@ -11,6 +11,7 @@ The accounts host is data-centre specific (accounts.zoho.com, .eu, .in,
 """
 
 import time
+from threading import Lock
 
 import requests
 
@@ -32,20 +33,26 @@ class ZohoTokenProvider:
         client_id: str,
         client_secret: str,
         refresh_token: str,
+        request_timeout: float = 30,
     ):
         """Store the OAuth client credentials and refresh token."""
         self.accounts_base_url = accounts_base_url.rstrip("/")
         self.client_id = client_id
         self.client_secret = client_secret
         self.refresh_token = refresh_token
+        self.request_timeout = request_timeout
         self._access_token: str | None = None
         self._expires_at: float = 0.0
+        self._refresh_lock = Lock()
 
     def get_access_token(self) -> str:
         """Return a valid access token, refreshing it if missing or stale."""
         if self._access_token and time.time() < self._expires_at:
             return self._access_token
-        return self._refresh_access_token()
+        with self._refresh_lock:
+            if self._access_token and time.time() < self._expires_at:
+                return self._access_token
+            return self._refresh_access_token()
 
     def _refresh_access_token(self) -> str:
         """Exchange the refresh token for a new access token.
@@ -63,7 +70,7 @@ class ZohoTokenProvider:
                 "client_id": self.client_id,
                 "client_secret": self.client_secret,
             },
-            timeout=30,
+            timeout=self.request_timeout,
         )
         response.raise_for_status()
         payload = response.json()

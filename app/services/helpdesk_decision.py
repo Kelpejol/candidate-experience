@@ -6,7 +6,7 @@ from pydantic import BaseModel
 from app.core.helpdesk_taxonomy import SENSITIVE_CATEGORIES
 from app.services.helpdesk_classifier import TicketClassification
 
-Action = Literal["draft_reply", "auto_reply", "route_to_human", "tag_only"]
+Action = Literal["draft_reply", "auto_reply", "route_to_human", "tag_only", "ask_clarification", "request_attachment"]
 
 # Deterministic sensitivity backstop: word STEMS matched at word boundaries,
 # so "complaint", "complaining", "complained" all hit "complain". Matched on
@@ -40,6 +40,18 @@ HUMAN_REQUEST_PHRASES = (
     "connect me to a human", "get me a human",
 )
 
+_ACKNOWLEDGEMENT_MARKERS = (
+    "ok", "okay", "noted", "received", "well received", "duly noted",
+    "thank you", "thanks", "many thanks", "alright", "all right",
+    "confirmed", "i confirm", "i acknowledge", "acknowledged",
+)
+
+_QUESTION_MARKERS = (
+    "?", "how", "what", "when", "where", "why", "can", "could", "please",
+    "help", "issue", "problem", "unable", "can't", "cannot", "not able",
+    "error", "failed", "failure", "reschedule", "change", "wrong",
+)
+
 
 def detect_human_request(text: str) -> str | None:
     """Return the matched phrase if the candidate explicitly asked for a
@@ -48,6 +60,26 @@ def detect_human_request(text: str) -> str | None:
     for phrase in HUMAN_REQUEST_PHRASES:
         if phrase in lowered:
             return phrase
+    return None
+
+
+def detect_simple_acknowledgement(text: str) -> str | None:
+    """Return a matched acknowledgement if the latest candidate message is
+    just a receipt/thanks/note, not a question or support request."""
+    normalized = re.sub(r"\s+", " ", text.strip().lower())
+    normalized = normalized.strip(" .,!;:-")
+    if not normalized:
+        return None
+    if len(normalized) > 120:
+        return None
+    words = normalized.split()
+    if any(marker in normalized for marker in _QUESTION_MARKERS):
+        return None
+    for marker in _ACKNOWLEDGEMENT_MARKERS:
+        if normalized == marker or normalized.startswith(f"{marker} "):
+            return marker
+    if len(words) <= 4 and any(marker in normalized for marker in _ACKNOWLEDGEMENT_MARKERS):
+        return normalized
     return None
 
 
@@ -115,6 +147,14 @@ def decide_ticket_action(
             action="tag_only",
             rule="spam_no_reply",
             reason="Spam/irrelevant; tag it and move on.",
+        )
+
+    acknowledgement = detect_simple_acknowledgement(body)
+    if acknowledgement:
+        return TicketDecision(
+            action="tag_only",
+            rule="simple_acknowledgement_no_reply_needed",
+            reason=f'Candidate only acknowledged the message ("{acknowledgement}"); no response required.',
         )
 
     if classification.issue_category == "availability_confirmation" and classification.confidence_label == "high":

@@ -1,6 +1,7 @@
 from sqlmodel import Session, select
 import logging
 import re
+from typing import Protocol
 
 
 from app.core.config import get_settings
@@ -17,6 +18,9 @@ from app.services.helpdesk_decision import (
 from app.services.helpdesk_draft_service import generate_draft_reply, generate_whatsapp_reply
 from app.services.helpdesk_executor_service import execute_ticket_action
 from app.services.helpdesk_kb_service import GroundingResult, retrieve_grounding
+from app.services.helpdesk_thread_context import build_thread_context
+
+MEDIUM_CONFIDENCE_STRONG_GROUNDING_DISTANCE = 0.32
 
 # Decision action -> mirror.ai_disposition value (plan doc vocabulary).
 _DISPOSITION_BY_ACTION = {
@@ -25,6 +29,30 @@ _DISPOSITION_BY_ACTION = {
     "route_to_human": "routed_to_human",
     "tag_only": "no_action",
 }
+
+# Zoho's raw `channel` values are integration-specific. Email is reliably
+# "Email", but social/WhatsApp integrations may arrive as "WhatsApp", "Chat",
+# or a close variant. Keep the raw value on the mirror for audit/UI; normalize
+# only where behavior diverges.
+_CONVERSATIONAL_CHANNEL_KEYS = {
+    "whatsapp",
+    "whatsappbusiness",
+    "chat",
+    "im",
+    "instantmessaging",
+}
+
+_EMAIL_PATTERN = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+
+
+def is_conversational_channel(channel: str | None) -> bool:
+    key = re.sub(r"[^a-z0-9]+", "", (channel or "").lower())
+    return key in _CONVERSATIONAL_CHANNEL_KEYS
+
+
+def has_valid_email_recipient(candidate_email: str | None) -> bool:
+    return bool(candidate_email and _EMAIL_PATTERN.match(candidate_email.strip()))
+
 
 # Mail-server bounce notifications (mailer-daemon / MS Exchange / Gmail NDRs)
 # land in Zoho as regular tickets from a bulk campaign send with bad addresses.
@@ -62,7 +90,9 @@ def is_system_bounce_notification(mirror: HelpdeskTicketMirror) -> bool:
 
 
 def apply_grounding_gate(
-    decision: TicketDecision, grounding: GroundingResult
+    decision: TicketDecision,
+    grounding: GroundingResult,
+    confidence_label: str | None = None,
 ) -> tuple[TicketDecision, str]:
     """Gate a draft_reply decision on KB coverage.
 
@@ -71,6 +101,29 @@ def apply_grounding_gate(
     coverage means no draft" is unit-testable without a network.
     """
     if grounding.grounded:
+        if (
+            confidence_label == "medium"
+            and (
+                grounding.best_distance is None
+                or grounding.best_distance > MEDIUM_CONFIDENCE_STRONG_GROUNDING_DISTANCE
+            )
+        ):
+            best = (
+                f"{grounding.best_distance:.2f}"
+                if grounding.best_distance is not None
+                else "n/a"
+            )
+            return (
+                TicketDecision(
+                    action="route_to_human",
+                    rule="medium_confidence_needs_strong_grounding",
+                    reason=(
+                        "Classifier confidence was medium and KB grounding was not "
+                        f"strong enough (best distance {best}); not drafting."
+                    ),
+                ),
+                "weak",
+            )
         return decision, "grounded"
 
     best = f"{grounding.best_distance:.2f}" if grounding.best_distance is not None else "n/a"
@@ -152,6 +205,11 @@ def process_ticket(session: Session, zoho_client, mirror: HelpdeskTicketMirror) 
     an unsent draft an officer must approve and send; settings.
     helpdesk_email_auto_reply_execute sends it immediately with no review.
     """
+    if get_settings().helpdesk_conversation_enabled:
+        from app.services.helpdesk_conversation_service import process_conversation_ticket
+
+        return process_conversation_ticket(session, zoho_client, mirror)
+
     if is_system_bounce_notification(mirror):
         # No candidate here — skip classification/grounding/drafting entirely
         # (saves an LLM call, not just a wasted route_to_human).
@@ -168,7 +226,27 @@ def process_ticket(session: Session, zoho_client, mirror: HelpdeskTicketMirror) 
         session.add(action)
         return action
 
-    body = get_latest_candidate_message(zoho_client, mirror.zoho_ticket_id)
+    is_whatsapp = is_conversational_channel(mirror.channel)
+    thread_context = build_thread_context(
+        zoho_client,
+        mirror.zoho_ticket_id,
+        conversational=is_whatsapp,
+    )
+    body = thread_context.text
+
+    if not thread_context.has_readable_candidate_content:
+        mirror.ai_disposition = "routed_to_human"
+        session.add(mirror)
+        action = HelpdeskAIAction(
+            zoho_ticket_id=mirror.zoho_ticket_id,
+            action_type="route_to_human",
+            rule="empty_or_unreadable_candidate_message",
+            reason="No readable candidate message or OCR text was available; a human should inspect the ticket and attachments.",
+            executed=False,
+        )
+        action.executed = execute_ticket_action(zoho_client, mirror, action)
+        session.add(action)
+        return action
 
     try:
         classification = classify_ticket(subject=mirror.subject or "", body=body)
@@ -200,13 +278,14 @@ def process_ticket(session: Session, zoho_client, mirror: HelpdeskTicketMirror) 
         session.add(action)
         return action
 
-    is_whatsapp = mirror.channel == "WhatsApp"
-
-    # WhatsApp-only: a candidate explicitly asking for a person always
-    # escalates, even if the question would otherwise be answerable — checked
-    # before the shared decision engine so it short-circuits without spending
-    # an embed/grounding call on a message that's escalating regardless.
-    human_request = detect_human_request(f"{mirror.subject or ''} {body or ''}") if is_whatsapp else None
+    # A candidate explicitly asking for a person always escalates, even if
+    # the question would otherwise be answerable — checked before the shared
+    # decision engine so it short-circuits without spending an embed/grounding
+    # call on a message that's escalating regardless.
+    latest_candidate_text = thread_context.latest_candidate_text or body
+    human_request = detect_human_request(
+        f"{mirror.subject or ''} {latest_candidate_text or ''}"
+    )
     if human_request:
         decision = TicketDecision(
             action="route_to_human",
@@ -218,7 +297,7 @@ def process_ticket(session: Session, zoho_client, mirror: HelpdeskTicketMirror) 
             classification,
             subject=mirror.subject or "",
             zoho_sentiment=mirror.sentiment,
-            body=body or "",
+            body=latest_candidate_text or "",
         )
 
     # Grounding gate: a draft may only happen when the KB actually covers
@@ -236,7 +315,9 @@ def process_ticket(session: Session, zoho_client, mirror: HelpdeskTicketMirror) 
             )
         except Exception:
             grounding = GroundingResult(grounded=False, best_distance=None, chunks=[])
-        decision, grounding_status = apply_grounding_gate(decision, grounding)
+        decision, grounding_status = apply_grounding_gate(
+            decision, grounding, classification.confidence_label
+        )
 
     # Reply generation: grounded draft_reply decisions get a reply written
     # from the retrieved chunks. The model may still escalate mid-generation
@@ -297,6 +378,12 @@ def process_ticket(session: Session, zoho_client, mirror: HelpdeskTicketMirror) 
                     ticket_id=mirror.zoho_ticket_id, content=draft_text
                 )
                 executed = True
+        elif not has_valid_email_recipient(mirror.candidate_email):
+            decision = TicketDecision(
+                action="route_to_human",
+                rule="missing_candidate_email",
+                reason="No valid candidate email is available for this ticket; escalating instead of writing a reply.",
+            )
         elif get_settings().helpdesk_email_auto_reply_execute and _auto_reply_allowed_for(
             mirror.candidate_email
         ):
@@ -380,7 +467,18 @@ def find_pending_tickets(session: Session, limit: int = 50) -> list[HelpdeskTick
     pending = []
     for mirror in open_mirrors:
         last_action_at = _latest_action_time(session, mirror.zoho_ticket_id)
-        if last_action_at is None or _changed_since(mirror, last_action_at):
+        delivery_pending = False
+        if get_settings().helpdesk_conversation_enabled:
+            from app.models.helpdesk_conversation_turn import HelpdeskConversationTurn
+
+            delivery_pending = session.exec(
+                select(HelpdeskConversationTurn.id)
+                .join(HelpdeskAIAction, HelpdeskAIAction.id == HelpdeskConversationTurn.action_id)
+                .where(HelpdeskAIAction.zoho_ticket_id == mirror.zoho_ticket_id)
+                .where(HelpdeskConversationTurn.delivery_status.in_(["pending", "sending"]))
+                .limit(1)
+            ).first() is not None
+        if last_action_at is None or _changed_since(mirror, last_action_at) or delivery_pending:
             pending.append(mirror)
         if len(pending) >= limit:
             break
@@ -405,7 +503,17 @@ def _changed_since(mirror: HelpdeskTicketMirror, last_action_at) -> bool:
     return mirror.zoho_modified_at > last_action_at
 
 
-def process_pending_tickets(session: Session, zoho_client, limit: int = 50) -> dict:
+class TicketProcessingLock(Protocol):
+    def acquire(self, zoho_ticket_id: str) -> str | None: ...
+    def release(self, zoho_ticket_id: str, token: str) -> None: ...
+
+
+def process_pending_tickets(
+    session: Session,
+    zoho_client,
+    limit: int = 50,
+    ticket_lock: TicketProcessingLock | None = None,
+) -> dict:
     """Run process_ticket on every pending ticket, committing each one.
 
     Returns a per-action tally, e.g. {"draft_reply": 3, "route_to_human": 1},
@@ -422,6 +530,13 @@ def process_pending_tickets(session: Session, zoho_client, limit: int = 50) -> d
     """
     tally: dict[str, int] = {}
     for mirror in find_pending_tickets(session, limit=limit):
+        lock_token = None
+        if ticket_lock is not None:
+            lock_token = ticket_lock.acquire(mirror.zoho_ticket_id)
+            if lock_token is None:
+                tally["skipped_locked"] = tally.get("skipped_locked", 0) + 1
+                continue
+
         try:
             action = process_ticket(session, zoho_client, mirror)
             session.commit()
@@ -432,24 +547,17 @@ def process_pending_tickets(session: Session, zoho_client, limit: int = 50) -> d
             logging.exception(
                 "Helpdesk processing failed for ticket %s", mirror.zoho_ticket_id
             )
+        finally:
+            if ticket_lock is not None and lock_token is not None:
+                ticket_lock.release(mirror.zoho_ticket_id, lock_token)
     return tally
 
 
 def get_latest_candidate_message(zoho_client, zoho_ticket_id: str) -> str:
-    """Return the newest INCOMING message's text — what the candidate last said.
+    """Return the candidate thread context for backward-compatible callers.
 
-    The naive latest thread is often our own outbound reply; classifying
-    that mislabels tickets (see #91942). Falls back to the latest thread
-    of any direction if no incoming thread exists.
+    `process_ticket` uses `build_thread_context` directly so it can pass the
+    channel-aware conversational flag and inspect whether content was readable.
+    This wrapper remains for scripts/tests that imported the older helper.
     """
-    threads = zoho_client.list_ticket_threads(zoho_ticket_id).get("data", [])
-    incoming = [t for t in threads if t.get("direction") == "in"]
-    candidates = sorted(incoming or threads, key=lambda t: t.get("createdTime") or "")
-
-    if not candidates:
-        return ""
-
-    newest = candidates[-1]
-    detail = zoho_client.get_thread(zoho_ticket_id, str(newest["id"]))
-    text = detail.get("content") or detail.get("summary") or newest.get("summary") or ""
-    return re.sub(r"<[^>]+>", " ", text).strip()
+    return build_thread_context(zoho_client, zoho_ticket_id).text

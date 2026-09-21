@@ -29,13 +29,16 @@ from croniter import croniter
 
 from app.core.config import get_settings
 from app.core.queue import get_default_queue
+from app.core.redis import get_redis_connection
 from app.jobs.helpdesk_ai_jobs import run_helpdesk_pipeline_job
+from app.services.job_queue_service import enqueue_unique_active_job
 
 
 def main() -> None:
     settings = get_settings()
     cron_expression = settings.helpdesk_pipeline_cron
     queue = get_default_queue()
+    redis_connection = get_redis_connection()
 
     print(f"Helpdesk pipeline scheduler started. Cron: '{cron_expression}'")
     schedule = croniter(cron_expression, datetime.now())
@@ -45,7 +48,15 @@ def main() -> None:
         sleep_seconds = max(0.0, (next_run - datetime.now()).total_seconds())
         time.sleep(sleep_seconds)
 
-        job = queue.enqueue(run_helpdesk_pipeline_job, job_timeout=900, result_ttl=3600)
+        job = enqueue_unique_active_job(
+            queue=queue,
+            redis_connection=redis_connection,
+            lock_key="helpdesk:pipeline:scheduled-job",
+            func=run_helpdesk_pipeline_job,
+            job_timeout=900,
+            result_ttl=3600,
+            lock_ttl=900,
+        )
         print(f"[{datetime.now().isoformat(timespec='seconds')}] Enqueued pipeline job {job.id}")
 
 

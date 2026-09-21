@@ -10,8 +10,9 @@ import pytest
 from app.core.config import get_settings
 from app.models.helpdesk_ticket_mirror import HelpdeskTicketMirror
 from app.services import helpdesk_ai_service
-from app.services.helpdesk_ai_service import process_ticket
+from app.services.helpdesk_ai_service import has_valid_email_recipient, process_ticket
 from app.services.helpdesk_kb_service import GroundingResult
+from app.services.helpdesk_thread_context import ThreadContext
 
 
 @pytest.fixture(autouse=True)
@@ -80,8 +81,16 @@ class _FakeZohoClient:
 
 def _patch_common(monkeypatch, *, grounded=True, chunks=None):
     monkeypatch.setattr(
-        helpdesk_ai_service, "get_latest_candidate_message",
-        lambda client, tid: "I can't get my test page to load",
+        helpdesk_ai_service,
+        "build_thread_context",
+        lambda client, tid, conversational=False: ThreadContext(
+            text="I can't get my test page to load",
+            latest_candidate_text="I can't get my test page to load",
+            has_readable_candidate_content=True,
+            has_attachments=False,
+            attachment_notes=[],
+            selected_thread_ids=["thread-1"],
+        ),
     )
     monkeypatch.setattr(
         helpdesk_ai_service, "classify_ticket", lambda subject, body: _Classification(),
@@ -103,6 +112,16 @@ def _patch_common(monkeypatch, *, grounded=True, chunks=None):
         helpdesk_ai_service, "generate_draft_reply",
         lambda **k: "Try refreshing the page or a different browser.",
     )
+
+
+@pytest.mark.parametrize("email", ["ada@example.com", " ada@example.com "])
+def test_valid_email_recipient_detection(email):
+    assert has_valid_email_recipient(email) is True
+
+
+@pytest.mark.parametrize("email", [None, "", "not-an-email", "ada@", "@example.com"])
+def test_invalid_email_recipient_detection(email):
+    assert has_valid_email_recipient(email) is False
 
 
 def test_grounded_answer_sends_directly_when_flag_on(session, monkeypatch):
@@ -144,6 +163,46 @@ def test_grounded_answer_not_sent_when_flag_off(session, monkeypatch):
     assert action.action_type == "draft_reply"
     assert action.executed is False
     assert action.draft_text == "Try refreshing the page or a different browser."
+    assert zoho_client.sent == []
+    assert zoho_client.drafts_created == []
+
+
+def test_email_candidate_asking_for_human_escalates_before_grounding(
+    session, monkeypatch
+):
+    mirror = _mirror()
+    session.add(mirror)
+    session.commit()
+
+    _patch_common(monkeypatch, grounded=True)
+    monkeypatch.setattr(
+        helpdesk_ai_service,
+        "build_thread_context",
+        lambda client, tid, conversational=False: ThreadContext(
+            text="please connect me to a human agent",
+            latest_candidate_text="please connect me to a human agent",
+            has_readable_candidate_content=True,
+            has_attachments=False,
+            attachment_notes=[],
+            selected_thread_ids=["thread-1"],
+        ),
+    )
+    monkeypatch.setattr(
+        helpdesk_ai_service,
+        "retrieve_grounding",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("must not retrieve")),
+    )
+    monkeypatch.setattr(
+        helpdesk_ai_service,
+        "generate_draft_reply",
+        lambda **k: (_ for _ in ()).throw(AssertionError("must not draft")),
+    )
+    zoho_client = _FakeZohoClient()
+
+    action = process_ticket(session, zoho_client, mirror)
+
+    assert action.action_type == "route_to_human"
+    assert action.rule == "candidate_requested_human"
     assert zoho_client.sent == []
     assert zoho_client.drafts_created == []
 
@@ -281,6 +340,50 @@ def test_auto_reply_empty_allowlist_means_no_restriction(session, monkeypatch):
 
     assert action.action_type == "auto_reply"
     assert len(zoho_client.sent) == 1
+
+    get_settings.cache_clear()
+
+
+def test_auto_reply_never_sends_without_a_valid_candidate_email(session, monkeypatch):
+    monkeypatch.setenv("HELPDESK_EMAIL_AUTO_REPLY_EXECUTE", "true")
+    get_settings.cache_clear()
+
+    mirror = _mirror(candidate_email=None)
+    session.add(mirror)
+    session.commit()
+
+    _patch_common(monkeypatch, grounded=True)
+    zoho_client = _FakeZohoClient()
+
+    action = process_ticket(session, zoho_client, mirror)
+
+    assert action.action_type == "route_to_human"
+    assert action.rule == "missing_candidate_email"
+    assert zoho_client.sent == []
+    assert zoho_client.drafts_created == []
+
+    get_settings.cache_clear()
+
+
+def test_draft_execute_never_creates_a_draft_without_a_valid_candidate_email(
+    session, monkeypatch
+):
+    monkeypatch.setenv("HELPDESK_DRAFT_EXECUTE", "true")
+    get_settings.cache_clear()
+
+    mirror = _mirror(candidate_email="not-an-email")
+    session.add(mirror)
+    session.commit()
+
+    _patch_common(monkeypatch, grounded=True)
+    zoho_client = _FakeZohoClient()
+
+    action = process_ticket(session, zoho_client, mirror)
+
+    assert action.action_type == "route_to_human"
+    assert action.rule == "missing_candidate_email"
+    assert zoho_client.sent == []
+    assert zoho_client.drafts_created == []
 
     get_settings.cache_clear()
 

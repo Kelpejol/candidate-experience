@@ -12,6 +12,7 @@ Zoho Desk quirks handled here:
 """
 
 import requests
+from urllib.parse import urlparse
 
 from app.integrations.zoho_auth import ZohoTokenProvider
 
@@ -24,11 +25,13 @@ class ZohoDeskClient:
         base_url: str,
         token_provider: ZohoTokenProvider,
         org_id: str | None = None,
+        request_timeout: float = 30,
     ):
         """Store the API base URL, token provider, and default org id."""
         self.base_url = base_url.rstrip("/")
         self.token_provider = token_provider
         self.org_id = org_id
+        self.request_timeout = request_timeout
 
     def _headers(self, include_org: bool = True) -> dict[str, str]:
         """Build auth headers; `orgId` is required on all org-scoped endpoints."""
@@ -59,7 +62,7 @@ class ZohoDeskClient:
             headers=self._headers(include_org=include_org),
             params=params or {},
             json=json,
-            timeout=30,
+            timeout=self.request_timeout,
         )
         response.raise_for_status()
         if response.status_code == 204 or not response.content:
@@ -113,7 +116,21 @@ class ZohoDeskClient:
 
     def list_ticket_threads(self, ticket_id: str) -> dict:
         """List the conversation threads (messages) on a ticket."""
-        return self._request("GET", f"/tickets/{ticket_id}/threads")
+        threads = []
+        seen = set()
+        for offset in range(0, 10000, 100):
+            page = self._request(
+                "GET", f"/tickets/{ticket_id}/threads",
+                params={"from": offset, "limit": 100},
+            ).get("data", [])
+            for thread in page:
+                if thread.get("id") in seen:
+                    raise RuntimeError("Zoho thread pagination repeated a message")
+                seen.add(thread.get("id"))
+                threads.append(thread)
+            if len(page) < 100:
+                return {"data": threads}
+        raise RuntimeError("Zoho thread history exceeds the supported page budget")
 
     def get_latest_thread(self, ticket_id: str) -> dict:
         """Fetch the most recent thread on a ticket, with full content."""
@@ -122,6 +139,32 @@ class ZohoDeskClient:
     def get_thread(self, ticket_id: str, thread_id: str) -> dict:
        """Fetch one thread's full detail (list_ticket_threads returns only summaries)."""
        return self._request("GET", f"/tickets/{ticket_id}/threads/{thread_id}")
+
+    def download_attachment_content(self, href: str) -> tuple[bytes, str]:
+        """Download a Zoho Desk attachment by its authenticated content URL.
+
+        Thread attachment payloads include an `href` like
+        `/tickets/{id}/threads/{thread}/attachments/{id}/content` or a full
+        Desk API URL. Only this client's own API host/base path is accepted.
+        Returns (bytes, content_type).
+        """
+        if href.startswith("/"):
+            url = f"{self.base_url}{href}"
+        else:
+            url = href
+
+        parsed_url = urlparse(url)
+        parsed_base = urlparse(self.base_url)
+        if parsed_url.scheme not in {"http", "https"}:
+            raise ValueError("Attachment URL must be HTTP(S)")
+        if parsed_url.netloc != parsed_base.netloc:
+            raise ValueError("Attachment URL host does not match Zoho Desk API host")
+        if not parsed_url.path.startswith(parsed_base.path.rstrip("/") + "/"):
+            raise ValueError("Attachment URL path does not match Zoho Desk API base path")
+
+        response = requests.get(url, headers=self._headers(), timeout=self.request_timeout)
+        response.raise_for_status()
+        return response.content, response.headers.get("content-type", "application/octet-stream")
 
 
     # Actions
@@ -222,7 +265,7 @@ class ZohoDeskClient:
         )
 
 
-def build_zoho_desk_client(settings) -> ZohoDeskClient:
+def build_zoho_desk_client(settings, request_timeout: float | None = None) -> ZohoDeskClient:
     """Build a ZohoDeskClient from app `Settings`.
 
     Raises RuntimeError naming every missing credential, so discovery
@@ -237,14 +280,17 @@ def build_zoho_desk_client(settings) -> ZohoDeskClient:
     if missing:
         raise RuntimeError(f"Missing Zoho settings: {', '.join(missing)}")
 
+    timeout = request_timeout if request_timeout is not None else 30
     token_provider = ZohoTokenProvider(
         accounts_base_url=settings.zoho_accounts_base_url,
         client_id=settings.zoho_client_id,
         client_secret=settings.zoho_client_secret,
         refresh_token=settings.zoho_refresh_token,
+        request_timeout=timeout,
     )
     return ZohoDeskClient(
         base_url=settings.zoho_desk_base_url,
         token_provider=token_provider,
         org_id=settings.zoho_org_id,
+        request_timeout=timeout,
     )

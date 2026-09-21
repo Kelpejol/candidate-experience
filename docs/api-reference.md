@@ -524,9 +524,9 @@ Request body: `{ "ticketId": "<zoho ticket id>" }` (also accepts `"id"` as a fal
 
 **Response `200`:**
 ```json
-{ "status": "ok", "zoho_ticket_id": "1010551000054574796", "ai_job_id": "b7e1-..." }
+{ "status": "ok", "zoho_ticket_id": "1010551000054574796", "ai_job_id": "b7e1-...", "ai_job_status": "queued" }
 ```
-The handler upserts the ticket into our local mirror, then enqueues `process_single_ticket_job` (classify → decide → maybe draft) in the background — the HTTP response returns immediately, before AI processing completes. `401` invalid/missing token; `422` no ticket ID in payload.
+The handler validates the token and enqueues `process_single_ticket_job` using a per-ticket active-job lock. The worker then fetches the current ticket from Zoho, upserts our local mirror, and runs classify → decide → maybe draft. Keeping the Zoho API fetch out of the webhook request makes Zoho callbacks fast and avoids failing the callback just because Zoho's own API is briefly slow. `401` invalid/missing token; `422` no ticket ID in payload; `503` if the job could not be enqueued.
 
 ---
 

@@ -1,4 +1,5 @@
 import pytest
+from concurrent.futures import ThreadPoolExecutor
 
 import app.integrations.zoho_auth as zoho_auth_module
 import app.integrations.zoho_desk_client as zoho_desk_module
@@ -7,10 +8,17 @@ from app.integrations.zoho_desk_client import ZohoDeskClient, build_zoho_desk_cl
 
 
 class FakeResponse:
-    def __init__(self, status_code: int = 200, payload: dict | None = None):
+    def __init__(
+        self,
+        status_code: int = 200,
+        payload: dict | None = None,
+        content: bytes | None = None,
+        headers: dict | None = None,
+    ):
         self.status_code = status_code
         self._payload = payload or {}
-        self.content = b"{}" if payload is not None else b""
+        self.content = content if content is not None else (b"{}" if payload is not None else b"")
+        self.headers = headers or {}
 
     def raise_for_status(self):
         if self.status_code >= 400:
@@ -50,6 +58,23 @@ def test_token_provider_refreshes_and_caches_access_token(monkeypatch):
     assert len(calls) == 1
     assert calls[0]["url"] == "https://accounts.zoho.com/oauth/v2/token"
     assert calls[0]["params"]["grant_type"] == "refresh_token"
+
+
+def test_token_provider_only_refreshes_once_for_concurrent_callers(monkeypatch):
+    calls = []
+
+    def fake_post(url, params=None, timeout=None):
+        calls.append({"url": url, "params": params})
+        return FakeResponse(payload={"access_token": "access_1", "expires_in": 3600})
+
+    monkeypatch.setattr(zoho_auth_module.requests, "post", fake_post)
+    provider = build_token_provider()
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        tokens = list(executor.map(lambda _: provider.get_access_token(), range(2)))
+
+    assert tokens == ["access_1", "access_1"]
+    assert len(calls) == 1
 
 
 def test_token_provider_refreshes_again_when_token_is_stale(monkeypatch):
@@ -139,6 +164,25 @@ def test_client_returns_empty_data_on_204_no_content(monkeypatch):
     )
 
     assert client.list_tickets() == {"data": []}
+
+
+def test_thread_history_fetches_all_pages(monkeypatch):
+    client = ZohoDeskClient(base_url="https://desk.zoho.com/api/v1", token_provider=FakeTokenProvider())
+    offsets = []
+    def request(method, path, params):
+        offsets.append(params["from"])
+        return {"data": [{"id": str(i)} for i in range(100)] if params["from"] == 0 else [{"id": "100"}]}
+    monkeypatch.setattr(client, "_request", request)
+    result = client.list_ticket_threads("ticket")
+    assert len(result["data"]) == 101
+    assert offsets == [0, 100]
+
+
+def test_repeated_thread_page_is_rejected(monkeypatch):
+    client = ZohoDeskClient(base_url="https://desk.zoho.com/api/v1", token_provider=FakeTokenProvider())
+    monkeypatch.setattr(client, "_request", lambda *a, **k: {"data": [{"id": str(i)} for i in range(100)]})
+    with pytest.raises(RuntimeError, match="repeated"):
+        client.list_ticket_threads("ticket")
 
 
 def test_create_draft_reply_posts_email_draft(monkeypatch):
@@ -253,6 +297,44 @@ def test_send_whatsapp_reply_posts_a_public_comment(monkeypatch):
     assert captured["json"]["content"] == "Hi, try a different browser."
 
 
+def test_download_attachment_content_uses_authenticated_zoho_api_url(monkeypatch):
+    captured = {}
+
+    def fake_get(url, headers=None, timeout=None):
+        captured.update({"url": url, "headers": headers})
+        return FakeResponse(content=b"image-bytes", headers={"content-type": "image/png"})
+
+    monkeypatch.setattr(zoho_desk_module.requests, "get", fake_get)
+
+    client = ZohoDeskClient(
+        base_url="https://desk.zoho.com/api/v1",
+        token_provider=FakeTokenProvider(),
+        org_id="org_1",
+    )
+
+    data, content_type = client.download_attachment_content(
+        "/tickets/t1/threads/th1/attachments/a1/content"
+    )
+
+    assert data == b"image-bytes"
+    assert content_type == "image/png"
+    assert captured["url"] == (
+        "https://desk.zoho.com/api/v1/tickets/t1/threads/th1/attachments/a1/content"
+    )
+    assert captured["headers"]["orgId"] == "org_1"
+
+
+def test_download_attachment_content_rejects_non_zoho_host():
+    client = ZohoDeskClient(
+        base_url="https://desk.zoho.com/api/v1",
+        token_provider=FakeTokenProvider(),
+        org_id="org_1",
+    )
+
+    with pytest.raises(ValueError):
+        client.download_attachment_content("https://example.com/file.png")
+
+
 class FakeSettings:
     zoho_accounts_base_url = "https://accounts.zoho.com"
     zoho_desk_base_url = "https://desk.zoho.com/api/v1"
@@ -268,6 +350,13 @@ def test_build_zoho_desk_client_builds_from_settings():
 
     assert client.base_url == "https://desk.zoho.com/api/v1"
     assert client.org_id == "org_1"
+
+
+def test_build_zoho_desk_client_accepts_request_timeout():
+    client = build_zoho_desk_client(FakeSettings(), request_timeout=7)
+
+    assert client.request_timeout == 7
+    assert client.token_provider.request_timeout == 7
 
 
 def test_build_zoho_desk_client_names_missing_settings():
