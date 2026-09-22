@@ -212,3 +212,31 @@ def understand(payload: dict, *, max_tool_calls: int = 2, require_search: bool =
 
 def review(payload: dict) -> AnswerReview:
     return structured_call(REVIEW_PROMPT, payload, AnswerReview)
+
+
+COMPOSE_PLATFORM_QUESTION_PROMPT = """The system cannot proceed without knowing which
+platform (FOT, Test Haven, or Scholastica) this conversation is about. Your own
+previous reasoning (given below as `prior_understanding`) asked about something
+else instead -- that doesn't move things forward, since the platform is still
+what's blocking progress. Compose the actual next question to resolve the
+platform, using everything available: the candidate's own words, `resolution`
+(any options/suggestions already narrowed from cues), and the conversation so
+far. Lead with a confident guess and ask for confirmation if the evidence
+already points somewhere; name only the options that are actually plausible
+given what you know, not every value that exists; if you have nothing to go
+on at all, it's fine to ask the candidate to check their invitation or login
+page instead of listing every option. Never request a password or OTP.
+Return only JSON: {"question": "...", "purpose": "one sentence: what this
+would establish"}
+"""
+
+
+class PlatformQuestion(BaseModel):
+    question: str
+    purpose: str
+
+
+def compose_platform_question(payload: dict, prior_understanding: Understanding) -> str:
+    full_payload = {**payload, "prior_understanding": prior_understanding.model_dump()}
+    result = structured_call(COMPOSE_PLATFORM_QUESTION_PROMPT, full_payload, PlatformQuestion)
+    return result.question.strip()

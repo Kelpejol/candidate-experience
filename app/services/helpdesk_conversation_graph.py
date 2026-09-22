@@ -110,7 +110,8 @@ def question(state: ConversationState, plan: Understanding, *, need_tool: bool) 
     """
     resolution = state["resolution"]
     text = plan.next_question.strip()
-    target = normalize(plan.question_target)
+    model_declared_target = normalize(plan.question_target)
+    target = model_declared_target
     strategy = plan.question_strategy
     confirmation = None
     if need_tool:
@@ -121,6 +122,20 @@ def question(state: ConversationState, plan: Understanding, *, need_tool: bool) 
             # confirming this suggestion later, regardless of how the model
             # actually phrased the question.
             confirmation = suggestions[0]
+        if "platform" not in model_declared_target and "tool" not in model_declared_target:
+            # The code needs the platform resolved to make progress, but the
+            # model's own composed question was about something else
+            # entirely (verified against real replay data: it can drift to
+            # e.g. rescheduling policy while resolution.tool stays
+            # unresolved, which then stalls next turn with no real
+            # progress). Get a question that's actually on-topic -- still
+            # the model's own reasoning and wording, just pointed at what
+            # the system actually needs answered this turn.
+            try:
+                text = llm.compose_platform_question(context_payload(state), plan)
+            except Exception:
+                logging.exception("Platform-question composition failed")
+                return handoff("clarification_no_useful_next_step", plan.reason)
     if not plan.useful_next_step or not text or not target or not plan.question_purpose:
         return handoff("clarification_no_useful_next_step", plan.reason)
     if re.search(r"(?:send|provide|share|tell|enter).{0,30}(?:your password|your otp|verification code)", text, re.I):

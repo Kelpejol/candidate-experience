@@ -92,6 +92,24 @@ def test_ambiguous_login_asks_instead_of_using_classifier_tool(graph, monkeypatc
     assert result["reply"] == plan().next_question
 
 
+def test_off_topic_question_gets_redirected_to_the_platform(graph, monkeypatch):
+    # Real bug found via the 2026-09-22 simulated-candidate eval: need_tool
+    # was True, but the model's own composed question drifted to something
+    # unrelated (there, rescheduling policy) -- resolution.tool never moved,
+    # and the conversation stalled next turn with no real progress. The fix:
+    # when the model's own question_target doesn't mention platform/tool,
+    # get an on-topic question instead (still model-composed, not a
+    # template) rather than trusting an off-topic one.
+    monkeypatch.setattr(graph_module.llm, "understand", lambda data, **_kw: plan(
+        next_question="Can you confirm whether a rescheduling option exists?",
+        question_target="rescheduling_policy",
+    ))
+    monkeypatch.setattr(graph_module.llm, "compose_platform_question", lambda payload, prior: "Which platform are you using for this exam?")
+    result = graph.invoke(inputs(), CONFIG)
+    assert result["decision"]["action"] == "ask_clarification"
+    assert result["reply"] == "Which platform are you using for this exam?"
+
+
 def test_explicit_fot_overrides_wrong_valid_classifier_tool(graph, monkeypatch):
     monkeypatch.setattr(graph_module.llm, "understand", lambda data, **_kw: plan())
     mock_answer(monkeypatch)
