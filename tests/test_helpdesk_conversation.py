@@ -82,7 +82,7 @@ def mock_answer(monkeypatch, *, scope="fot", approve=True):
 
 
 def test_ambiguous_login_asks_instead_of_using_classifier_tool(graph, monkeypatch):
-    monkeypatch.setattr(graph_module.llm, "understand", lambda data: plan())
+    monkeypatch.setattr(graph_module.llm, "understand", lambda data, **_kw: plan())
     monkeypatch.setattr(graph_module, "retrieve_grounding", lambda *a, **k: pytest.fail("Must clarify before retrieval"))
     result = graph.invoke(inputs(), CONFIG)
     assert result["decision"]["action"] == "ask_clarification"
@@ -93,7 +93,7 @@ def test_ambiguous_login_asks_instead_of_using_classifier_tool(graph, monkeypatc
 
 
 def test_explicit_fot_overrides_wrong_valid_classifier_tool(graph, monkeypatch):
-    monkeypatch.setattr(graph_module.llm, "understand", lambda data: plan())
+    monkeypatch.setattr(graph_module.llm, "understand", lambda data, **_kw: plan())
     mock_answer(monkeypatch)
     result = graph.invoke(inputs("I cannot access my FOT test"), CONFIG)
     assert result["resolution"]["tool"] == "FOT"
@@ -145,7 +145,7 @@ def test_approved_campaign_mapping_does_not_require_campaign_kb():
 
 def test_followup_retains_issue_and_answers_from_fot(graph, monkeypatch):
     payloads = []
-    def understand(data):
+    def understand(data, **_kw):
         payloads.append(data)
         return plan()
     monkeypatch.setattr(graph_module.llm, "understand", understand)
@@ -159,7 +159,7 @@ def test_followup_retains_issue_and_answers_from_fot(graph, monkeypatch):
 
 
 def test_tool_is_remembered_beyond_recent_window(graph, monkeypatch):
-    monkeypatch.setattr(graph_module.llm, "understand", lambda data: plan())
+    monkeypatch.setattr(graph_module.llm, "understand", lambda data, **_kw: plan())
     mock_answer(monkeypatch)
     graph.invoke(inputs("FOT"), CONFIG)
     second = graph.invoke(inputs("Still cannot log in", "2"), CONFIG)
@@ -167,14 +167,14 @@ def test_tool_is_remembered_beyond_recent_window(graph, monkeypatch):
 
 
 def test_latest_tool_correction_overrides_subject(graph, monkeypatch):
-    monkeypatch.setattr(graph_module.llm, "understand", lambda data: plan())
+    monkeypatch.setattr(graph_module.llm, "understand", lambda data, **_kw: plan())
     mock_answer(monkeypatch, scope="test-haven")
     result = graph.invoke(inputs("Actually I am using Test Haven", subject="FOT login"), CONFIG)
     assert result["resolution"]["tool"] == "Test Haven"
 
 
 def test_conflicting_names_require_confirmation(graph, monkeypatch):
-    monkeypatch.setattr(graph_module.llm, "understand", lambda data: plan())
+    monkeypatch.setattr(graph_module.llm, "understand", lambda data, **_kw: plan())
     result = graph.invoke(inputs("FOT or Test Haven I am not sure"), CONFIG)
     assert result["decision"]["action"] == "ask_clarification"
 
@@ -182,7 +182,7 @@ def test_conflicting_names_require_confirmation(graph, monkeypatch):
 def test_more_than_two_clarifications_allowed_with_progress(graph, monkeypatch):
     for index in range(5):
         text = f"Error code {index}"
-        monkeypatch.setattr(graph_module.llm, "understand", lambda data, text=text, index=index: plan(
+        monkeypatch.setattr(graph_module.llm, "understand", lambda data, text=text, index=index, **_kw: plan(
             observations=[{"kind": "error", "value": text, "source_id": str(index), "quote": text}],
         ))
         result = graph.invoke(inputs(text, str(index)), CONFIG)
@@ -191,22 +191,22 @@ def test_more_than_two_clarifications_allowed_with_progress(graph, monkeypatch):
 
 
 def test_repeated_question_without_progress_escalates(graph, monkeypatch):
-    monkeypatch.setattr(graph_module.llm, "understand", lambda data: plan())
+    monkeypatch.setattr(graph_module.llm, "understand", lambda data, **_kw: plan())
     graph.invoke(inputs("I don't know", "1"), CONFIG)
     result = graph.invoke(inputs("I don't know", "2"), CONFIG)
     assert result["decision"]["rule"] == "clarification_stalled"
 
 
 def test_alternative_screenshot_strategy_is_allowed(graph, monkeypatch):
-    monkeypatch.setattr(graph_module.llm, "understand", lambda data: plan())
+    monkeypatch.setattr(graph_module.llm, "understand", lambda data, **_kw: plan())
     graph.invoke(inputs(), CONFIG)
-    monkeypatch.setattr(graph_module.llm, "understand", lambda data: plan(question_strategy="screenshot"))
+    monkeypatch.setattr(graph_module.llm, "understand", lambda data, **_kw: plan(question_strategy="screenshot"))
     result = graph.invoke(inputs("I don't know", "2"), CONFIG)
     assert result["decision"]["action"] == "request_attachment"
 
 
 def test_fabricated_observation_fails_closed(graph, monkeypatch):
-    monkeypatch.setattr(graph_module.llm, "understand", lambda data: plan(
+    monkeypatch.setattr(graph_module.llm, "understand", lambda data, **_kw: plan(
         observations=[{"kind": "error", "value": "camera error", "quote": "camera error", "source_id": "1"}],
     ))
     result = graph.invoke(inputs(), CONFIG)
@@ -215,7 +215,7 @@ def test_fabricated_observation_fails_closed(graph, monkeypatch):
 
 @pytest.mark.parametrize("scope", ["test-haven", "general", None])
 def test_wrong_or_missing_tool_knowledge_is_not_used(graph, monkeypatch, scope):
-    monkeypatch.setattr(graph_module.llm, "understand", lambda data: plan())
+    monkeypatch.setattr(graph_module.llm, "understand", lambda data, **_kw: plan())
     mock_answer(monkeypatch, scope=scope)
     result = graph.invoke(inputs("FOT"), CONFIG)
     assert result["decision"]["action"] == "route_to_human"
@@ -223,7 +223,7 @@ def test_wrong_or_missing_tool_knowledge_is_not_used(graph, monkeypatch, scope):
 
 
 def test_answer_review_can_reject_grounded_draft(graph, monkeypatch):
-    monkeypatch.setattr(graph_module.llm, "understand", lambda data: plan())
+    monkeypatch.setattr(graph_module.llm, "understand", lambda data, **_kw: plan())
     mock_answer(monkeypatch, approve=False)
     result = graph.invoke(inputs("FOT"), CONFIG)
     assert result["decision"]["rule"] == "answer_review_failed"
@@ -231,7 +231,7 @@ def test_answer_review_can_reject_grounded_draft(graph, monkeypatch):
 
 
 def test_human_request_does_not_call_model(graph, monkeypatch):
-    monkeypatch.setattr(graph_module.llm, "understand", lambda data: pytest.fail("Must respect human request first"))
+    monkeypatch.setattr(graph_module.llm, "understand", lambda data, **_kw: pytest.fail("Must respect human request first"))
     result = graph.invoke(inputs("Please connect me to a human"), CONFIG)
     assert result["decision"]["rule"] == "candidate_requested_human"
 
@@ -278,7 +278,7 @@ def enable_send(monkeypatch):
 def test_entrypoint_persists_clarification_and_deduplicates(session, monkeypatch):
     from app.services.helpdesk_ai_service import process_ticket
     enable_send(monkeypatch)
-    monkeypatch.setattr(graph_module.llm, "understand", lambda data: plan())
+    monkeypatch.setattr(graph_module.llm, "understand", lambda data, **_kw: plan())
     row = mirror(session)
     client = Zoho()
     first = process_ticket(session, client, row)
@@ -292,7 +292,7 @@ def test_entrypoint_persists_clarification_and_deduplicates(session, monkeypatch
 
 def test_checkpoint_survives_new_connection_and_next_candidate_reply(session, monkeypatch):
     enable_send(monkeypatch)
-    monkeypatch.setattr(graph_module.llm, "understand", lambda data: plan())
+    monkeypatch.setattr(graph_module.llm, "understand", lambda data, **_kw: plan())
     mock_answer(monkeypatch)
     row = mirror(session)
     client = Zoho()
@@ -306,7 +306,7 @@ def test_checkpoint_survives_new_connection_and_next_candidate_reply(session, mo
 
 def test_uncertain_send_is_never_retried(session, monkeypatch):
     enable_send(monkeypatch)
-    monkeypatch.setattr(graph_module.llm, "understand", lambda data: plan())
+    monkeypatch.setattr(graph_module.llm, "understand", lambda data, **_kw: plan())
     row = mirror(session)
     client = Zoho()
     client.fail_send = True
@@ -338,7 +338,7 @@ def test_officer_takes_over_during_reasoning(session, monkeypatch):
     enable_send(monkeypatch)
     row = mirror(session)
     client = Zoho()
-    def understand(data):
+    def understand(data, **_kw):
         client.assignee = "officer"
         return plan()
     monkeypatch.setattr(graph_module.llm, "understand", understand)
@@ -351,7 +351,7 @@ def test_new_candidate_message_cancels_stale_response(session, monkeypatch):
     enable_send(monkeypatch)
     row = mirror(session)
     client = Zoho()
-    def understand(data):
+    def understand(data, **_kw):
         client.messages.append({"id": "2", "direction": "in", "content": "FOT", "createdTime": "2026-09-19T10:01:00Z"})
         return plan()
     monkeypatch.setattr(graph_module.llm, "understand", understand)
@@ -361,7 +361,7 @@ def test_new_candidate_message_cancels_stale_response(session, monkeypatch):
 
 
 def test_dry_run_does_not_send_or_poison_live_checkpoint(session, monkeypatch):
-    monkeypatch.setattr(graph_module.llm, "understand", lambda data: plan())
+    monkeypatch.setattr(graph_module.llm, "understand", lambda data, **_kw: plan())
     row = mirror(session)
     client = Zoho()
     dry = service.process_conversation_ticket(session, client, row)
@@ -385,7 +385,7 @@ def test_edited_cue_loses_approval():
 
 
 def test_typo_suggests_then_explicit_confirmation_resolves(graph, monkeypatch):
-    monkeypatch.setattr(graph_module.llm, "understand", lambda data: plan())
+    monkeypatch.setattr(graph_module.llm, "understand", lambda data, **_kw: plan())
     mock_answer(monkeypatch, scope="test-haven")
     first = graph.invoke(inputs("I am using Test Havn"), CONFIG)
     assert first["resolution"]["tool"] is None
@@ -401,7 +401,7 @@ def test_typo_suggests_then_explicit_confirmation_resolves(graph, monkeypatch):
 
 
 def test_yes_does_not_confirm_an_unsent_question(graph, monkeypatch):
-    monkeypatch.setattr(graph_module.llm, "understand", lambda data: plan())
+    monkeypatch.setattr(graph_module.llm, "understand", lambda data, **_kw: plan())
     graph.invoke(inputs("I am using Test Havn"), CONFIG)
     second = graph.invoke(inputs("Yes", "2"), CONFIG)
     assert second["resolution"]["tool"] is None
@@ -410,14 +410,14 @@ def test_yes_does_not_confirm_an_unsent_question(graph, monkeypatch):
 def test_generic_question_can_use_general_without_tool(graph, monkeypatch):
     classification = TicketClassification(issue_category="general_enquiry", sensitivity_detected=False,
                                           confidence_label="high", reason="General process question")
-    monkeypatch.setattr(graph_module.llm, "understand", lambda data: plan(classification=classification, needs_tool=False))
+    monkeypatch.setattr(graph_module.llm, "understand", lambda data, **_kw: plan(classification=classification, needs_tool=False))
     mock_answer(monkeypatch, scope="general")
     result = graph.invoke(inputs("How do I contact support?"), CONFIG)
     assert result["decision"]["action"] == "draft_reply"
 
 
 def test_technical_issue_cannot_bypass_tool_requirement(graph, monkeypatch):
-    monkeypatch.setattr(graph_module.llm, "understand", lambda data: plan(needs_tool=False))
+    monkeypatch.setattr(graph_module.llm, "understand", lambda data, **_kw: plan(needs_tool=False))
     result = graph.invoke(inputs(), CONFIG)
     assert result["decision"]["action"] == "ask_clarification"
 
@@ -425,14 +425,14 @@ def test_technical_issue_cannot_bypass_tool_requirement(graph, monkeypatch):
 def test_sensitive_classification_still_escalates(graph, monkeypatch):
     classification = TicketClassification(issue_category="payment_issue", sensitivity_detected=True,
                                           confidence_label="high", reason="Payment issue")
-    monkeypatch.setattr(graph_module.llm, "understand", lambda data: plan(classification=classification))
+    monkeypatch.setattr(graph_module.llm, "understand", lambda data, **_kw: plan(classification=classification))
     result = graph.invoke(inputs(), CONFIG)
     assert result["decision"]["rule"] == "sensitive_never_automated"
 
 
 def test_recipient_change_cancels_delivery(session, monkeypatch):
     enable_send(monkeypatch)
-    monkeypatch.setattr(graph_module.llm, "understand", lambda data: plan())
+    monkeypatch.setattr(graph_module.llm, "understand", lambda data, **_kw: plan())
     row = mirror(session)
     client = Zoho()
     client.get_ticket = lambda tid: {"status": "Open", "email": "changed@example.com"}
@@ -444,7 +444,7 @@ def test_recipient_change_cancels_delivery(session, monkeypatch):
 def test_pending_delivery_is_retried_by_polling(session, monkeypatch):
     from app.services.helpdesk_ai_service import find_pending_tickets
     enable_send(monkeypatch)
-    monkeypatch.setattr(graph_module.llm, "understand", lambda data: plan())
+    monkeypatch.setattr(graph_module.llm, "understand", lambda data, **_kw: plan())
     row = mirror(session)
     client = Zoho()
     get_ticket = client.get_ticket
@@ -460,7 +460,7 @@ def test_pending_delivery_is_retried_by_polling(session, monkeypatch):
 
 
 def test_unassigned_officer_reply_pauses_automation(session, monkeypatch):
-    monkeypatch.setattr(graph_module.llm, "understand", lambda data: pytest.fail("Officer has taken over"))
+    monkeypatch.setattr(graph_module.llm, "understand", lambda data, **_kw: pytest.fail("Officer has taken over"))
     row = mirror(session)
     client = Zoho()
     client.messages.extend([
@@ -474,7 +474,7 @@ def test_unassigned_officer_reply_pauses_automation(session, monkeypatch):
 def test_whatsapp_clarification_uses_its_own_send_flag(session, monkeypatch):
     monkeypatch.setenv("HELPDESK_WHATSAPP_AUTO_REPLY_EXECUTE", "true")
     get_settings.cache_clear()
-    monkeypatch.setattr(graph_module.llm, "understand", lambda data: plan())
+    monkeypatch.setattr(graph_module.llm, "understand", lambda data, **_kw: plan())
     row = mirror(session)
     row.channel = "WhatsApp"
     client = Zoho()
@@ -487,7 +487,7 @@ def test_whatsapp_clarification_uses_its_own_send_flag(session, monkeypatch):
 def test_changing_live_modes_does_not_reply_again_to_same_message(session, monkeypatch):
     monkeypatch.setenv("HELPDESK_DRAFT_EXECUTE", "true")
     get_settings.cache_clear()
-    monkeypatch.setattr(graph_module.llm, "understand", lambda data: plan())
+    monkeypatch.setattr(graph_module.llm, "understand", lambda data, **_kw: plan())
     row = mirror(session)
     client = Zoho()
     draft = service.process_conversation_ticket(session, client, row)
@@ -501,7 +501,7 @@ def test_reply_settings_change_cancels_prepared_send(session, monkeypatch):
     enable_send(monkeypatch)
     row = mirror(session)
     client = Zoho()
-    def understand(data):
+    def understand(data, **_kw):
         monkeypatch.setenv("HELPDESK_EMAIL_AUTO_REPLY_EXECUTE", "false")
         get_settings.cache_clear()
         return plan()

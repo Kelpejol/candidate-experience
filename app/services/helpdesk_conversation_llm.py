@@ -117,13 +117,19 @@ def structured_call(prompt: str, payload: dict, schema: type[BaseModel]):
             ])
 
 
-def understand(payload: dict, *, max_tool_calls: int = 2) -> Understanding:
+def understand(payload: dict, *, max_tool_calls: int = 2, require_search: bool = False) -> Understanding:
     """Understand the conversation, with a bounded ability to consult the KB
     mid-reasoning (never to answer from it -- see SEARCH_KB_TOOL_INSTRUCTIONS).
 
     This is what lets the model compose its own clarifying question informed
     by real KB content and the already-narrowed `resolution` options, instead
     of the graph layer templating a fixed sentence over whatever it says.
+
+    `require_search`: when the caller has nothing else to go on (no cue or
+    explicit mention narrowed the platform at all), the model must run at
+    least one search before it's allowed to finalize -- otherwise it's free
+    to decide for itself whether searching is worth it, same as any other
+    judgement call it makes.
     """
     from app.services.helpdesk_classifier import _category_block
     from app.services.helpdesk_kb_service import retrieve_grounding
@@ -133,20 +139,40 @@ def understand(payload: dict, *, max_tool_calls: int = 2) -> Understanding:
         UNDERSTAND_PROMPT + "\n" + _category_block() + "\n"
         + SEARCH_KB_TOOL_INSTRUCTIONS.format(max_calls=max_tool_calls, schema=schema_json)
     )
+    if require_search:
+        system_prompt += (
+            "\nNothing so far (no cue, no explicit mention) has narrowed "
+            "down the platform for this ticket. You must run at least one "
+            "search_kb tool call before giving your final answer this turn."
+        )
     messages = [
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": json.dumps(payload, ensure_ascii=True)},
     ]
 
     calls_made = 0
-    for _ in range(max_tool_calls + 2):
+    nudges_used = 0
+    max_nudges = 2  # give up forcing it after this many refusals, rather than loop or fail the ticket
+    for _ in range(max_tool_calls + max_nudges + 2):
         output = _chat(messages)
         try:
             parsed = json.loads(output)
         except (json.JSONDecodeError, ValueError):
             parsed = None
+        is_tool_call = isinstance(parsed, dict) and "tool_call" in parsed
 
-        if isinstance(parsed, dict) and "tool_call" in parsed and calls_made < max_tool_calls:
+        if require_search and calls_made == 0 and not is_tool_call and nudges_used < max_nudges:
+            nudges_used += 1
+            messages.append({"role": "assistant", "content": output})
+            messages.append({
+                "role": "user",
+                "content": "You must search the KB at least once before answering "
+                           "-- nothing has narrowed the platform down yet. Respond "
+                           'with a {"tool_call": ...} now.',
+            })
+            continue
+
+        if is_tool_call and calls_made < max_tool_calls:
             tool_call = parsed.get("tool_call") or {}
             query = str(tool_call.get("query") or "").strip()
             scope = tool_call.get("tool_scope")

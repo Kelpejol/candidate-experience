@@ -68,7 +68,13 @@ def understand(state: ConversationState) -> dict:
     if human_request:
         return handoff("candidate_requested_human", "Candidate requested an officer.")
     try:
-        plan = llm.understand(context_payload(state))
+        resolution = state["resolution"]
+        # No cue or explicit mention has narrowed the platform at all -- make
+        # the model check the KB before it's allowed to just guess. When
+        # cues (or the candidate) already gave it something to go on, leave
+        # the search fully up to its own judgement.
+        require_search = resolution.get("tool") is None and not resolution.get("options")
+        plan = llm.understand(context_payload(state), require_search=require_search)
         plan.classification = plan.classification.model_copy(update={
             "tool_name": state["resolution"]["tool"], "campaign_name": None,
         })
