@@ -90,6 +90,18 @@ def understand(state: ConversationState) -> dict:
 
 
 def question(state: ConversationState, plan: Understanding, *, need_tool: bool) -> dict:
+    """Ask the model's own composed clarifying question, as-is.
+
+    The model already receives `resolution` (tool/options/suggestions
+    narrowed by cues) as part of its input, and reasons over it, real KB
+    context (via its own tool calls in understand()), and the conversation
+    itself to decide what to actually ask and how to phrase it -- this
+    function no longer overwrites that with a fixed template. What it still
+    enforces, unconditionally: this must be a real question the model
+    actually wants to ask (useful_next_step/purpose set), it must not solicit
+    a password/OTP, and it must not repeat an approach that already failed to
+    make progress (the fingerprint/stall check below).
+    """
     resolution = state["resolution"]
     text = plan.next_question.strip()
     target = normalize(plan.question_target)
@@ -97,17 +109,12 @@ def question(state: ConversationState, plan: Understanding, *, need_tool: bool) 
     confirmation = None
     if need_tool:
         target = "platform"
-        options = resolution["options"] or ["FOT", "Test Haven", "Scholastica"]
         suggestions = resolution.get("suggestions", [])
-        if len(suggestions) == 1 and strategy in {"direct", "options"}:
+        if len(suggestions) == 1:
+            # Bookkeeping only -- lets prepare() recognize a plain "yes" as
+            # confirming this suggestion later, regardless of how the model
+            # actually phrased the question.
             confirmation = suggestions[0]
-            text = "Do you mean " + confirmation["label"] + "?"
-        elif strategy == "screenshot":
-            text = "Could you send a screenshot showing the platform name and the error? Please hide passwords, codes and personal details."
-        elif strategy == "locate_information":
-            text = "Please check the platform name on your invitation or test page. What name is shown there? You can also tell us the organisation or exam named in the invitation."
-        else:
-            text = "To help with the right instructions, which platform are you using: " + ", ".join(options) + "? If you are unsure, you can send a screenshot with private details hidden."
     if not plan.useful_next_step or not text or not target or not plan.question_purpose:
         return handoff("clarification_no_useful_next_step", plan.reason)
     if re.search(r"(?:send|provide|share|tell|enter).{0,30}(?:your password|your otp|verification code)", text, re.I):

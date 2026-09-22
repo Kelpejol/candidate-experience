@@ -87,7 +87,9 @@ def test_ambiguous_login_asks_instead_of_using_classifier_tool(graph, monkeypatc
     result = graph.invoke(inputs(), CONFIG)
     assert result["decision"]["action"] == "ask_clarification"
     assert result["resolution"]["tool"] is None
-    assert "FOT" in result["reply"]
+    # The model's own composed question is used as-is now, not a fixed
+    # template listing every tool -- verify it's passed through unmodified.
+    assert result["reply"] == plan().next_question
 
 
 def test_explicit_fot_overrides_wrong_valid_classifier_tool(graph, monkeypatch):
@@ -387,7 +389,10 @@ def test_typo_suggests_then_explicit_confirmation_resolves(graph, monkeypatch):
     mock_answer(monkeypatch, scope="test-haven")
     first = graph.invoke(inputs("I am using Test Havn"), CONFIG)
     assert first["resolution"]["tool"] is None
-    assert first["reply"] == "Do you mean Test Haven?"
+    # The model's own composed question is used as-is; what matters here is
+    # the confirmation bookkeeping below (a single suggestion resolves on a
+    # plain "yes"), not the exact wording.
+    assert first["reply"] == plan().next_question
     second_inputs = inputs("Yes", "3")
     second_inputs["messages"].insert(0, {"id": "2", "role": "officer", "text": first["reply"]})
     second = graph.invoke(second_inputs, CONFIG)
