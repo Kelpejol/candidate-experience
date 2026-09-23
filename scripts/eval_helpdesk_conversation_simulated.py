@@ -111,24 +111,34 @@ def simulate_candidate_reply(subject, original_message, ai_question, prior_turns
         return raw.strip()
 
 
+AUTO_ACK_MARKER = "Our Customer Service team will review your email and get back to you"
+
 JUDGE_SYSTEM = (
-    "You are grading a candidate-support helpdesk AI's final draft reply "
-    "(after a multi-turn conversation, possibly including clarifying "
-    "questions answered by the candidate) against what a real officer "
-    "actually told the candidate historically, for a recruitment "
-    "assessment company (Dragnet Solutions). Score on 4 axes, 1-5 each:\n"
-    "- factual_alignment: does the AI's answer match what officers "
-    "actually tell candidates for this kind of issue?\n"
-    "- hallucination: does the AI invent any link, policy, date, or "
-    "promise not grounded in real KB content?\n"
+    "You are grading a candidate-support helpdesk AI's final draft reply, "
+    "for a recruitment assessment company (Dragnet Solutions). You are "
+    "given: the KB excerpts the AI actually retrieved and was supposed to "
+    "answer from, the AI's draft, and the real historical officer reply "
+    "(which may just be a generic auto-acknowledgment with no real fix --"
+    " this is flagged for you explicitly below; when it's flagged, it is "
+    "NOT usable as a comparison and you must judge factual_alignment and "
+    "hallucination ONLY against the KB excerpts, not against it).\n\n"
+    "Score on 4 axes, 1-5 each:\n"
+    "- factual_alignment: PRIMARILY, does the AI's draft accurately reflect "
+    "what the KB excerpts actually say (not vaguer, not stronger, not "
+    "different)? If the historical reply is substantive (not flagged as "
+    "auto-ack-only), secondarily check it's consistent with that too, but "
+    "the KB excerpts are the ground truth, not the historical reply.\n"
+    "- hallucination: does the AI's draft state any specific fact, link, "
+    "step, date, or promise that is NOT present in the KB excerpts shown? "
+    "Quote-check this directly against the excerpt text. 5 = every "
+    "concrete claim traces to an excerpt, 1 = concrete claims invented.\n"
     "- escalation_correctness: when the AI escalated, was that the right "
-    "call? When it answered, was answering appropriate?\n"
+    "call given the excerpts/conversation? When it answered, was "
+    "answering (vs. escalating) appropriate?\n"
     "- tone: warm, professional, appropriately concise?\n\n"
-    "Many real historical officer replies are just a generic \"ticketed "
-    "for review\" acknowledgment with no real fix -- do not penalize "
-    "factual_alignment against a non-answer.\n\n"
     'Respond with ONLY JSON: {"factual_alignment": 1-5, "hallucination": '
-    '1-5, "escalation_correctness": 1-5, "tone": 1-5, "notes": "one sentence"}'
+    '1-5, "escalation_correctness": 1-5, "tone": 1-5, "notes": "one '
+    'sentence, and if hallucination < 4 name the specific unsupported claim"}'
 )
 
 
@@ -202,6 +212,8 @@ def run_ticket(ticket, ground_truth):
 
             ai_question = result.get("reply") or ""
             simulated_reply = simulate_candidate_reply(ticket["subject"], original_text, ai_question, prior_turns)
+            turns_log[-1]["ai_question"] = ai_question
+            turns_log[-1]["simulated_reply"] = simulated_reply
             prior_turns.append({"candidate": original_text if turn_index == 0 else "(see above)", "ai": ai_question})
             for tool in TOOLS:
                 if tool.lower() in simulated_reply.lower():
@@ -214,20 +226,33 @@ def run_ticket(ticket, ground_truth):
 
         real_officer_texts = [m["text"] for m in ticket["messages"] if m["role"] == "officer"]
         real_final_answer = real_officer_texts[-1] if real_officer_texts else "(no officer reply on file)"
+        real_answer_is_auto_ack_only = all(AUTO_ACK_MARKER in t for t in real_officer_texts) if real_officer_texts else True
 
         final_action = final_result.get("decision", {}).get("action") if final_result else None
         final_reply = final_result.get("reply") if final_result else None
+        final_chunks = final_result.get("chunks") if final_result else None
         resolved = final_action == "draft_reply" and bool(final_reply)
 
         scores = None
         if resolved:
+            chunks_text = "\n\n---\n\n".join(
+                f"[{c.get('heading', c.get('source', 'excerpt'))}]\n{c.get('text', '')}"
+                for c in (final_chunks or [])
+            ) or "(no chunks recorded)"
+            ack_flag = (
+                "FLAGGED: this is ONLY the generic auto-acknowledgment template -- "
+                "not usable as a comparison, judge against the KB excerpts only."
+                if real_answer_is_auto_ack_only else
+                "This is a substantive historical reply, usable as secondary comparison."
+            )
             judge_user = (
                 f"Candidate's original message:\n{original_text[:1200]}\n\n"
+                f"KB excerpts the AI retrieved and was supposed to answer from:\n{chunks_text[:2500]}\n\n"
                 f"AI's final draft:\n{final_reply[:1500]}\n\n"
-                f"Real historical officer reply:\n{real_final_answer[:1500]}"
+                f"Real historical officer reply ({ack_flag}):\n{real_final_answer[:1500]}"
             )
             try:
-                raw = gateway_chat(JUDGE_SYSTEM, judge_user, max_tokens=300)
+                raw = gateway_chat(JUDGE_SYSTEM, judge_user, max_tokens=350)
                 scores = parse_json_response(raw)
             except Exception as e:
                 scores = {"factual_alignment": None, "hallucination": None,
@@ -248,6 +273,9 @@ def run_ticket(ticket, ground_truth):
             "resolved": bool(resolved),
             "turns": turns_log,
             "scores": scores,
+            "final_reply_text": final_reply if resolved else None,
+            "final_chunks": final_chunks if resolved else None,
+            "real_answer_is_auto_ack_only": real_answer_is_auto_ack_only,
             "ground_truth_tool": truth_tool,
             "simulated_platform_mentions": simulated_platform_mentions,
             "simulator_matched_truth": simulator_matched_truth,
