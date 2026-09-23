@@ -34,6 +34,7 @@ class Understanding(StrictModel):
 
 
 class AnswerReview(StrictModel):
+    unsupported_claims: list[str] = Field(default_factory=list, max_length=10)
     supported: bool
     addresses_request: bool
     applicable: bool

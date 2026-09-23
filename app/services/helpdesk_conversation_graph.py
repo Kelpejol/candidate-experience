@@ -217,8 +217,19 @@ def review(state: ConversationState) -> dict:
     try:
         result = llm.review({**context_payload(state), "understanding": state["understanding"],
                              "kb_chunks": state["chunks"], "reply": state["reply"]})
-        if not (result.supported and result.addresses_request and result.applicable) or result.repeats_failed_fix:
-            return handoff("answer_review_failed", result.reason)
+        # Defense in depth: verified via real eval data (2026-09-23) that
+        # asking for a bare supported: bool let genuine hallucinations
+        # through (specific instructions/app names/limits invented beyond
+        # what the KB excerpts actually said). Don't trust `supported`
+        # alone if the model's own claim-by-claim check found something --
+        # an inconsistent true/non-empty-list combination should still fail
+        # closed, not open.
+        if (result.unsupported_claims or not (result.supported and result.addresses_request and result.applicable)
+                or result.repeats_failed_fix):
+            reason = result.reason
+            if result.unsupported_claims:
+                reason = f"Unsupported claim(s): {'; '.join(result.unsupported_claims)}. {reason}"
+            return handoff("answer_review_failed", reason)
         return {}
     except Exception:
         logging.exception("Conversation answer review failed")

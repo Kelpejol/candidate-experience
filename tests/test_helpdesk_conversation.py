@@ -248,6 +248,26 @@ def test_answer_review_can_reject_grounded_draft(graph, monkeypatch):
     assert result["reply"] is None
 
 
+def test_unsupported_claims_reject_even_if_supported_is_true(graph, monkeypatch):
+    # Real bug found via the 2026-09-23 eval (grounded against actual KB
+    # chunks): a bare supported: bool let genuine hallucinations through --
+    # specific instructions the KB excerpts never mentioned. Defense in
+    # depth: don't trust `supported` alone if the model's own claim-by-claim
+    # check (unsupported_claims) found something, even if it inconsistently
+    # also said supported=True.
+    monkeypatch.setattr(graph_module.llm, "understand", lambda data, **_kw: plan())
+    mock_answer(monkeypatch, approve=True)
+    monkeypatch.setattr(graph_module.llm, "review", lambda data: AnswerReview(
+        unsupported_claims=["grant camera permissions to the Test Haven app"],
+        supported=True, addresses_request=True, applicable=True, repeats_failed_fix=False,
+        reason="Looks fine",
+    ))
+    result = graph.invoke(inputs("FOT"), CONFIG)
+    assert result["decision"]["rule"] == "answer_review_failed"
+    assert "grant camera permissions" in result["decision"]["reason"]
+    assert result["reply"] is None
+
+
 def test_human_request_does_not_call_model(graph, monkeypatch):
     monkeypatch.setattr(graph_module.llm, "understand", lambda data, **_kw: pytest.fail("Must respect human request first"))
     result = graph.invoke(inputs("Please connect me to a human"), CONFIG)
