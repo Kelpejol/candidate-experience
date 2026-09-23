@@ -173,7 +173,11 @@ def main():
     print(f"evaluating {len(records)} tickets...")
 
     with open(OUT_PATH, "a") as out_f:
-        with ThreadPoolExecutor(max_workers=6) as ex:
+        # Lowered from 6 (2026-09-23): the inference gateway is a single-
+        # process, single-worker uvicorn instance shared with real
+        # production traffic -- heavy concurrent eval load was likely
+        # contributing to real instability, not just receiving it.
+        with ThreadPoolExecutor(max_workers=2) as ex:
             futures = [ex.submit(eval_one, r) for r in records]
             for i, fut in enumerate(futures):
                 try:

@@ -301,7 +301,12 @@ def main():
     print(f"evaluating {len(tickets)} tickets (simulated candidate, max {MAX_SIMULATED_TURNS} turns each)...")
 
     with open(OUT_PATH, "a") as out_f:
-        with ThreadPoolExecutor(max_workers=6) as ex:
+        # Lowered from 6 (2026-09-23): the inference gateway is a single-
+        # process, single-worker uvicorn instance behind nginx/Cloudflare,
+        # shared with real production traffic -- heavy concurrent eval load
+        # was very likely contributing to the connection-reset/522/525
+        # instability seen tonight, not just receiving it.
+        with ThreadPoolExecutor(max_workers=2) as ex:
             futures = [ex.submit(run_ticket, t, ground_truth) for t in tickets]
             for i, fut in enumerate(futures):
                 try:
